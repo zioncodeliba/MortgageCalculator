@@ -1,0 +1,40 @@
+{
+    "code": 0,
+    "message": "done",
+    "uuid": "f9abce81-cdb6-486f-95eb-157bf5dbc8fd",
+    "data": {
+        "approval_date": "13/12/2024",
+        "expiration_date": false,
+        "bank_id": "4",
+        "bank_title": "דיסקונט",
+        "bank_color": "#62a93b",
+        "purpose": "פירעון הלוואות בבנק אחר",
+        "purpose_type": 2,
+        "tracks": [
+            {
+                "loan_type": "2",
+                "staged_drawdown": "2",
+                "loan_board": "1",
+                "loan_value": "70000",
+                "loan_years": "300",
+                "loan_interest": "7.89",
+                "addition_to_interest": "",
+                "first_month_payment": "535.18",
+                "high_month_payment": "535.71",
+                "change_frequency": ""
+            },
+            {
+                "loan_type": "4",
+                "staged_drawdown": "2",
+                "loan_board": "1",
+                "loan_value": "130000",
+                "loan_years": "300",
+                "loan_interest": "6.63",
+                "addition_to_interest": "2.09",
+                "first_month_payment": "888.35",
+                "high_month_payment": "939.88",
+                "change_frequency": "60"
+            }
+        ]
+    }
+}

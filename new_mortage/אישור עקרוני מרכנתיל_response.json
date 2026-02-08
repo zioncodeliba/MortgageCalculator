@@ -1,0 +1,52 @@
+{
+    "code": 0,
+    "message": "done",
+    "uuid": "447b0541-f562-4e82-9150-1fd6c78ae0ae",
+    "data": {
+        "approval_date": "09/12/2025",
+        "expiration_date": false,
+        "bank_id": "12",
+        "bank_title": "מרכנתיל",
+        "bank_color": "#62a93b",
+        "purpose": "לרכישה יד שניה",
+        "purpose_type": 1,
+        "tracks": [
+            {
+                "loan_type": "5",
+                "staged_drawdown": "2",
+                "loan_board": "1",
+                "loan_value": "247500",
+                "loan_years": "300",
+                "loan_interest": "2.89",
+                "addition_to_interest": "1.1",
+                "first_month_payment": "1161.31",
+                "high_month_payment": "2175.84",
+                "change_frequency": "60"
+            },
+            {
+                "loan_type": "1",
+                "staged_drawdown": "2",
+                "loan_board": "1",
+                "loan_value": "247500",
+                "loan_years": "252",
+                "loan_interest": "5.35",
+                "addition_to_interest": "-0.4",
+                "first_month_payment": "1637.03",
+                "high_month_payment": "1668.34",
+                "change_frequency": ""
+            },
+            {
+                "loan_type": "2",
+                "staged_drawdown": "2",
+                "loan_board": "1",
+                "loan_value": "255000",
+                "loan_years": "252",
+                "loan_interest": "4.89",
+                "addition_to_interest": "",
+                "first_month_payment": "1620.75",
+                "high_month_payment": "1622.8",
+                "change_frequency": ""
+            }
+        ]
+    }
+}

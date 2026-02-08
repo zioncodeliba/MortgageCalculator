@@ -1,0 +1,54 @@
+{
+    "code": 0,
+    "message": "done",
+    "uuid": "8a14cf42-22ef-48e8-be47-fdabf5f7b0f8",
+    "data": {
+        "approval_date": "09/12/2025",
+        "expiration_date": "02/01/2026",
+        "bank_id": "8",
+        "bank_title": "הבינלאומי",
+        "bank_color": "#ffc423",
+        "tracks": [
+            {
+                "loan_type": 3,
+                "loan_board": "1",
+                "loan_years": 360,
+                "loan_value": 225000,
+                "loan_interest": 3.7,
+                "track_purpose": "רכישת דירה יד שניה",
+                "addition_to_interest": "",
+                "change_frequency": ""
+            },
+            {
+                "loan_type": 2,
+                "loan_board": "1",
+                "loan_years": 360,
+                "loan_value": 262500,
+                "loan_interest": 4.89,
+                "track_purpose": "רכישת דירה יד שניה",
+                "addition_to_interest": "",
+                "change_frequency": ""
+            },
+            {
+                "loan_type": 1,
+                "loan_board": "1",
+                "loan_years": 360,
+                "loan_value": 112500,
+                "loan_interest": 5.6,
+                "track_purpose": "רכישת דירה יד שניה",
+                "addition_to_interest": -0.15,
+                "change_frequency": ""
+            },
+            {
+                "loan_type": 4,
+                "loan_board": "1",
+                "loan_years": 360,
+                "loan_value": 150000,
+                "loan_interest": 4.88,
+                "track_purpose": "רכישת דירה יד שניה",
+                "addition_to_interest": 1.145,
+                "change_frequency": 36
+            }
+        ]
+    }
+}

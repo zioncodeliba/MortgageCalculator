@@ -1,0 +1,36 @@
+{
+    "code": 0,
+    "message": "done",
+    "uuid": "58821b2d-5c0c-4f71-84ea-98472000e8f8",
+    "data": {
+        "approval_date": "27/11/2024",
+        "expiration_date": "21/12/2024",
+        "bank_id": "1",
+        "bank_title": "מזרחי טפחות",
+        "bank_color": "#f5821f",
+        "purpose": "מיחזור לבנק אחר -לדיור",
+        "purpose_type": 1,
+        "tracks": [
+            {
+                "loan_type": 2,
+                "loan_board": "1",
+                "loan_years": 360,
+                "loan_value": 250000,
+                "loan_interest": 5.02,
+                "addition_to_interest": "",
+                "change_frequency": "",
+                "anchor": 5.02
+            },
+            {
+                "loan_type": 4,
+                "loan_board": "1",
+                "loan_years": 360,
+                "loan_value": 250000,
+                "loan_interest": 5.22,
+                "addition_to_interest": 0.9,
+                "change_frequency": 24,
+                "anchor": 4.319999999999999
+            }
+        ]
+    }
+}

@@ -1,0 +1,43 @@
+{
+    "code": 0,
+    "message": "done",
+    "uuid": "731c133e-4c21-4d14-a691-86d280809adf",
+    "data": {
+        "approval_date": "11/12/2024",
+        "expiration_date": "04/01/2025",
+        "bank_id": "3",
+        "bank_title": "הפועלים",
+        "bank_color": "#e61d25",
+        "purpose": "100 - כל מטרה סילוק הלוואה שניתנה למטרת רכישה",
+        "purpose_type": 2,
+        "tracks": [
+            {
+                "loan_type": 2,
+                "loan_board": "1",
+                "loan_years": 180,
+                "loan_value": 165460,
+                "change_frequency": "",
+                "loan_interest": 4.5,
+                "addition_to_interest": ""
+            },
+            {
+                "loan_type": 4,
+                "loan_board": "1",
+                "loan_years": 180,
+                "loan_value": 194659,
+                "change_frequency": "18",
+                "loan_interest": 4.7,
+                "addition_to_interest": 0.28
+            },
+            {
+                "loan_type": 1,
+                "loan_board": "1",
+                "loan_years": 220,
+                "loan_value": 131395,
+                "change_frequency": "",
+                "loan_interest": 5.1,
+                "addition_to_interest": -0.9
+            }
+        ]
+    }
+}

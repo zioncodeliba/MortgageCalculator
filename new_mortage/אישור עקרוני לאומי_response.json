@@ -1,0 +1,32 @@
+{
+    "code": 0,
+    "message": "done",
+    "uuid": "7460b99b-bc81-4de1-a692-bb3f38ef93e6",
+    "data": {
+        "approval_date": "12/12/2024",
+        "expiration_date": "5/01/2025",
+        "bank_id": "2",
+        "bank_title": "לאומי",
+        "bank_color": "#0097f0",
+        "tracks": [
+            {
+                "loan_type": 1,
+                "loan_board": "1",
+                "loan_years": 220,
+                "loan_value": 195000,
+                "change_frequency": "",
+                "loan_interest": 5.3,
+                "addition_to_interest": -0.7
+            },
+            {
+                "loan_type": 4,
+                "loan_board": "1",
+                "loan_years": 180,
+                "loan_value": 296000,
+                "change_frequency": 30,
+                "loan_interest": 4.87,
+                "addition_to_interest": 0.4
+            }
+        ]
+    }
+}
