@@ -1,0 +1,127 @@
+{
+  "info": {
+    "_postman_id": "b9d0c8b8-8b7a-4a1c-8e7e-6d8c7e5c2a1f",
+    "name": "MortgageCalculator Local",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "item": [
+    {
+      "name": "simulate",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "name": "Content-Type",
+            "value": "application/json",
+            "type": "text"
+          }
+        ],
+        "url": {
+          "raw": "{{base_url}}/simulate?property_value=1500000",
+          "host": ["{{base_url}}"],
+          "path": ["simulate"],
+          "query": [
+            {
+              "key": "property_value",
+              "value": "1500000"
+            }
+          ]
+        },
+        "body": {
+          "mode": "raw",
+          "raw": "[\n  {\n    \"principal\": 500000,\n    \"months\": 240,\n    \"rate\": 4.5,\n    \"rate_type\": \"קלצ\",\n    \"schedule_t\": \"שפיצר (החזר חודשי קבוע)\",\n    \"freq\": 0\n  },\n  {\n    \"principal\": 300000,\n    \"months\": 300,\n    \"rate\": 5.0,\n    \"rate_type\": \"פריים\",\n    \"schedule_t\": \"שפיצר (החזר חודשי קבוע)\",\n    \"freq\": 1\n  }\n]"
+        }
+      }
+    },
+    {
+      "name": "optimize",
+      "request": {
+        "method": "POST",
+        "url": {
+          "raw": "{{base_url}}/optimize",
+          "host": ["{{base_url}}"],
+          "path": ["optimize"]
+        },
+        "body": {
+          "mode": "formdata",
+          "formdata": [
+            { "key": "loan", "value": "1000000", "type": "text" },
+            { "key": "property_value", "value": "3000000", "type": "text" },
+            { "key": "income", "value": "35000", "type": "text" },
+            { "key": "max_pmt", "value": "9500", "type": "text" },
+            { "key": "max_scan_years", "value": "30", "type": "text" }
+          ]
+        }
+      }
+    },
+    {
+      "name": "refinance",
+      "request": {
+        "method": "POST",
+        "header": [
+          { "key": "accept", "value": "application/json" }
+        ],
+        "url": {
+          "raw": "{{base_url}}/refinance",
+          "host": ["{{base_url}}"],
+          "path": ["refinance"]
+        },
+        "body": {
+          "mode": "formdata",
+          "formdata": [
+            {
+              "key": "json_file",
+              "type": "file",
+              "src": "/Users/user/Desktop/BI/final_9/recycal_mortage/poalim_response.json"
+            },
+            { "key": "property_value", "value": "2500000", "type": "text" }
+          ]
+        }
+      }
+    },
+    {
+      "name": "approval-check",
+      "request": {
+        "method": "POST",
+        "header": [
+          { "key": "accept", "value": "application/json" }
+        ],
+        "url": {
+          "raw": "{{base_url}}/approval-check",
+          "host": ["{{base_url}}"],
+          "path": ["approval-check"]
+        },
+        "body": {
+          "mode": "formdata",
+          "formdata": [
+            {
+              "key": "json_file",
+              "type": "file",
+              "src": "/Users/user/Desktop/BI/final_9/new_mortage/discont.json"
+            },
+            { "key": "property_value", "value": "2500000", "type": "text" }
+          ]
+        }
+      }
+    },
+    {
+      "name": "uniform-baskets",
+      "request": {
+        "method": "GET",
+        "url": {
+          "raw": "{{base_url}}/uniform-baskets?principal=1000000&years=20",
+          "host": ["{{base_url}}"],
+          "path": ["uniform-baskets"],
+          "query": [
+            { "key": "principal", "value": "1000000" },
+            { "key": "years", "value": "20" }
+          ]
+        }
+      }
+    }
+  ],
+  "variable": [
+    { "key": "base_url", "value": "http://127.0.0.1:8000" }
+  ]
+}

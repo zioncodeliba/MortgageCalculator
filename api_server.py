@@ -1,4 +1,5 @@
 from fastapi import FastAPI, UploadFile, File, Form
+from fastapi.middleware.cors import CORSMiddleware
 import json
 from typing import List, Dict, Any, Optional
 from functions import (
@@ -11,6 +12,20 @@ import config as con
 
 
 app = FastAPI(title="Mortgage API Server")
+
+# CORS (local dev)
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[
+        "http://localhost:8010",
+        "http://127.0.0.1:8010",
+        "http://localhost:3001",
+        "http://127.0.0.1:3001",
+    ],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 
 
@@ -499,4 +514,3 @@ async def approval(json_file: UploadFile = File(...), property_value: float = Fo
 @app.get("/uniform-baskets") # טאב 7
 async def baskets(principal: float, years: int):
     return engine.get_uniform_baskets_analysis(principal, years)
-
