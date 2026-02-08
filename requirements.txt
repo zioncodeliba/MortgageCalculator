@@ -1,0 +1,13 @@
+fastapi
+uvicorn
+pandas
+numpy
+plotly
+streamlit
+requests
+beautifulsoup4
+pulp
+openpyxl
+python-multipart
+scikit-learn
+types-requests
