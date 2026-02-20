@@ -36,11 +36,16 @@ ANCHOR_TRACK_MAP = {
 
 bank_of_israel_rate = 4.0
 prime_margin = 1.5
-defult_capital_allocation = "35%"
+defult_capital_allocation = "75%"
 
 # מינימום ומקסימום על מסלולים קבועים ומשתנים
 MIN_fixed_share = 0.33 
 MAX_variable_share = 0.66
+sensitivity="בינוני"
+prepay_window_key="לא"
+objective_mode="balanced"
+alpha=0.5
+monthly_income_factor= 3.5 # monthly_income_net=float(first_payment * 3.5),
 
 # מינימום הכנסה ביחס להחזר המשכנתא
 OFFICIAL_ratio_limit = 0.50
@@ -111,7 +116,7 @@ FIXED_INDEXED_TABLE: Dict[int, float] = {4: 2.8,
  29: 3.0,
  30: 3.0}
 
-SPREADS: Dict[str, Dict[str, float]] = {'Variable Indexed': 1.1, 'Variable Non-Indexed': 0.9, 'Prime': -0.7, 'Makam': 1.1}
+SPREADS: Dict[str, Dict[str, float]] = {'Variable Indexed': 1.1, 'Variable Non-Indexed': 0.9, 'Prime': -0.7}
 
 
 # התאמות לפי הקצאת הון (LTV) פר סוג מסלול (אם לא קיים ערך – 0.0)
@@ -142,8 +147,9 @@ ANCHOR_TRACK_MAP = {
 MIN_ACTIVE_SHARE = 0.1      # למשל 5% מההלוואה לכל מסלול "דולק"
 MAX_SHARE_PER_OPTION = 0.4
 
-TIME_LIMIT = 20 # sec
-no_savings = 30000 # no_savings money between ori and anouther mortage
+TIME_LIMIT = 10 # sec
+no_savings = 60000.0 # no_savings money between ori and anouther mortage
+diff_between_opt = 150000.0
 max_diff_of_first_payment = 500
 max_diff_of_max_payment = 500
 
@@ -161,3 +167,8 @@ PREPAY_DISCOUNT = {'כן': {'משתנה': {1: 25.0, 12: 25.0, 24: 25.0, 30: 25.0
         'קבועה': 0.0},
  'לא בטוח': {'משתנה': {1: 12.5, 12: 12.5, 24: 12.5, 30: 12.5, 36: 12.5, 60: 0.0, 84: 0.0, 120: 0.0},
              'קבועה': -12.5}}
+
+
+def durations_months(max_months):
+    return list(range(12, max_months, 1))
+

@@ -8,6 +8,7 @@ requests
 beautifulsoup4
 pulp
 openpyxl
+xlrd>=2.0.1
 python-multipart
 scikit-learn
 types-requests

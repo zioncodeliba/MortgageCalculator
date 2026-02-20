@@ -7,16 +7,18 @@ import config as con
 # משתנים גלובליים (בדיוק כמו בקוד המקורי שלך)
 # ============================================================
 
-XLSX_PATH = None
+XLSX_PATH_MODEL= None
+XLSX_PATH_NOMINAL= None
+XLSX_PATH_REAL  = None
 DATASTORE = None
 NOMINAL_ANCHOR = None
 REAL_ANCHOR = None
 MAKAM_ANCOR = None
 LAST_UPDATE = None
 
-XLSX_PATH = dl.fetch_latest_boi_excels()
-print(f'exstract latest_boi_excels from: {XLSX_PATH}')
-DATASTORE = dl.load_workbook_data(XLSX_PATH, con.HORIZON, con.SCENARIO)
+XLSX_PATH_MODEL,XLSX_PATH_NOMINAL,XLSX_PATH_REAL = dl.fetch_latest_boi_excels()
+print(f'exstract latest_boi_excels from: {XLSX_PATH_MODEL}')
+DATASTORE = dl.load_workbook_data(XLSX_PATH_MODEL, con.HORIZON, con.SCENARIO)
 
 ancors = dl.load_boi_data()
 NOMINAL_ANCHOR = ancors["nominal_anchor"]
@@ -32,16 +34,16 @@ def refresh_data():
     מוריד את קבצי ה-BOI מהאינטרנט, טוען אותם למשתנים הגלובליים,
     ומעדכן את כל העוגנים והדאטהסטים.
     """
-    global XLSX_PATH, DATASTORE, NOMINAL_ANCHOR, REAL_ANCHOR, MAKAM_ANCHOR, LAST_UPDATE
+    global XLSX_PATH_MODEL,XLSX_PATH_NOMINAL,XLSX_PATH_REAL, DATASTORE, NOMINAL_ANCHOR, REAL_ANCHOR, MAKAM_ANCHOR, LAST_UPDATE
 
     print("⏳ Refreshing BOI data...")
 
     # 1. הורדת הקבצים החדשים מהבנק
-    XLSX_PATH = dl.fetch_latest_boi_excels()
+    XLSX_PATH_MODEL,XLSX_PATH_NOMINAL,XLSX_PATH_REAL = dl.fetch_latest_boi_excels()
 
     # 2. טעינת ה-Workbook (דאטהסט ראשי)
     DATASTORE = dl.load_workbook_data(
-        XLSX_PATH,
+        XLSX_PATH_MODEL,
         con.HORIZON,
         con.SCENARIO
     )
@@ -56,7 +58,7 @@ def refresh_data():
     LAST_UPDATE = time.time()
 
     print(f"✅ BOI data refreshed successfully at {time.ctime(LAST_UPDATE)}")
-    print(f"   Loaded from: {XLSX_PATH}")
+    print(f"   Loaded from: {XLSX_PATH_MODEL}")
 
 
 # ============================================================

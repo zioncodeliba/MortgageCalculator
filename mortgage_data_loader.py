@@ -162,7 +162,7 @@ def fetch_latest_boi_excels() -> str:
     if "model" not in saved_paths:
         raise RuntimeError("model file not found among downloaded BOI files.")
 
-    return saved_paths["model"]
+    return saved_paths["model"],saved_paths["nominal"],saved_paths["real"]
 
 
 # ================================================================
@@ -243,6 +243,7 @@ class WorkbookLoader:
                 df = df[df["תאריך"].notna()].copy()
 
         latest = df.sort_values("תאריך").iloc[-1] if ("תאריך" in df.columns and not df.empty) else df.iloc[-1]
+        #print(latest)
         return latest
 
     def _extract_zero_series(self, latest_row: pd.Series, horizon: int) -> np.ndarray:

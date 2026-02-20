@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-# streamlit run  /Users/user/Desktop/BI/final_6/mortgage_app.py
+# streamlit run  /Users/user/Desktop/BI/final_10/mortgage_app.py
 
 # ------------------------------ CONSTANTS & IMPORTS ------------------------------
 import io
@@ -19,22 +19,149 @@ from typing import List
 import config as con
 import mortgage_data_loader as dl
 import json
+import requests
 from functions import InterestRateCalculator,calculate_schedule,summarize_schedule,aggregate_yearly
 from functions import convert_api_json_to_loan_tracks, optimize_mortgage,monthly_to_yearly, find_best_mortage
-from functions import _schedule_arrays,_pad,_aggregate_monthly_payment, build_anchor, safe_name,create_4_candidate_mortages,convert_api_json_to_first_loan_tracks
+from functions import _schedule_arrays,_pad,_aggregate_monthly_payment, build_anchor,create_4_candidate_mortages,convert_api_json_to_first_loan_tracks
+import pprint
 
 @st.cache_data(ttl=86400)
 def get_cached_data():
-    path = dl.fetch_latest_boi_excels()
-    store = dl.load_workbook_data(path, con.HORIZON, con.SCENARIO)
-    print(f'Data loaded from: {path}')
-    return path, store
+    path_model,path_nominal,path_real = dl.fetch_latest_boi_excels()
+    store = dl.load_workbook_data(path_model, con.HORIZON, con.SCENARIO)
+    print(f'Data loaded from: {path_model}')
+    return path_model, store
 
 XLSX_PATH, DATASTORE = get_cached_data()
 
 
 # from data_loader_service import DATASTORE #, NOMINAL_ANCHOR, REAL_ANCHOR, MAKAM_ANCOR
+@st.cache_data
+def get_all_schedules(sim_p, sim_m):
+    # פונקציית עזר פנימית לחישוב מסלול בודד
+    def quick_calc(amt, t_type, freq, name, months):
+        try:
+            rate = float(clac_rate_int.get_adjusted_rate(con.ANCHOR_TRACK_MAP[t_type], '75%', freq, months))
+        except: 
+            rate = 4.0
+        sch = calculate_schedule(amt, months, rate, "שפיצר", t_type, freq, con.prime_margin, 0)
+        return {"name": name, "sch": sch, "rate": rate, "principal": amt}
 
+    # חישוב כל הסלים מראש
+    data = {
+        "סל אחיד 1": [quick_calc(sim_p, "קלצ", None, "קל\"צ מלא", sim_m)],
+        "סל אחיד 2": [
+            quick_calc(sim_p/3, "קלצ", None, "קל\"צ (1/3)", sim_m),
+            quick_calc(sim_p/3, "פריים", 1, "פריים (1/3)", sim_m),
+            quick_calc(sim_p/3, "מצ", 60, "משתנה (1/3)", sim_m)
+        ],
+        "סל אחיד 3": [
+            quick_calc(sim_p/2, "קלצ", None, "קל\"צ (1/2)", sim_m),
+            quick_calc(sim_p/2, "פריים", 1, "פריים (1/2)", sim_m)
+        ]
+    }
+    return data
+
+def save_config_to_file(updates: dict):
+    """
+    Reads config_v2.py, replaces variable assignments with new values,
+    and writes it back. Supports both scalars and dictionaries.
+    """
+    #config_path = os.path.join(os.getcwd(),"config.py")
+    script_dir = Path(__file__).parent.resolve()
+    config_path = script_dir / "config.py"
+    try:
+        with open(config_path, "r", encoding="utf-8") as f:
+            content = f.read()
+    except Exception as e:
+        st.error(f"Failed to read config file: {e}")
+        return
+
+    for key, value in updates.items():
+        if isinstance(value, (dict, list)):
+            formatted_value = pprint.pformat(value, width=100, sort_dicts=False)
+            
+            # Simple prefix match for top-level assignment
+            prefix_pattern = rf'(^|\n){key}\s*(?::[^=]+)?=\s*'
+            
+            # We assume unique variable names at top level
+            p_match = re.search(prefix_pattern, content)
+            if p_match:
+                start_idx = p_match.end()
+                # Find end of this structure (balanced braces)
+                open_char = content[start_idx]
+                close_char = '}' if open_char == '{' else ']'
+                
+                cnt = 0
+                end_idx = start_idx
+                in_struct = False
+                
+                # Scan forward
+                for i in range(start_idx, len(content)):
+                    ch = content[i]
+                    if ch == open_char:
+                        cnt += 1
+                        in_struct = True
+                    elif ch == close_char:
+                        cnt -= 1
+                    
+                    if in_struct and cnt == 0:
+                        end_idx = i + 1
+                        break
+                
+                if end_idx > start_idx:
+                    content = content[:start_idx] + formatted_value + content[end_idx:]
+
+        else:
+            # Handle scalars
+            if isinstance(value, str):
+                replacement = f'{key} = "{value}"'
+                pattern = rf'{key}\s*=\s*[\'"][^\'"]*[\'"]'
+            else:
+                replacement = f'{key} = {value}'
+                pattern = rf'{key}\s*=\s*[\d\.]+'
+
+            if re.search(pattern, content):
+                content = re.sub(pattern, replacement, content)
+
+    try:
+        with open(config_path, "w", encoding="utf-8") as f:
+            f.write(content)
+    except Exception as e:
+        st.error(f"Failed to write config file: {e}")
+
+
+def sync_config_to_api(updates: dict):
+    sync_url = os.getenv("CALC_API_SYNC_URL", "").strip()
+    if not sync_url:
+        return False, "CALC_API_SYNC_URL is not configured"
+
+    headers = {"Content-Type": "application/json"}
+    sync_key = os.getenv("CALC_API_SYNC_KEY", "").strip()
+    if sync_key:
+        headers["X-Config-Sync-Key"] = sync_key
+
+    try:
+        response = requests.post(
+            sync_url,
+            json={"updates": updates},
+            headers=headers,
+            timeout=20,
+        )
+    except requests.RequestException as e:
+        return False, str(e)
+
+    if not response.ok:
+        try:
+            error_payload = response.json()
+            detail = error_payload.get("detail")
+            if detail:
+                return False, str(detail)
+        except Exception:
+            pass
+        return False, f"HTTP {response.status_code}"
+
+    return True, None
 
 # ------------------------------ STREAMLIT UI (MIX) ------------------------------
 st.set_page_config(page_title="מחשבון משכנתא", layout="wide")
@@ -45,244 +172,6 @@ clac_rate_int = InterestRateCalculator()
 inflation_and_XLSX_PATH = XLSX_PATH
 st.info(f"{inflation_and_XLSX_PATH} :נתוני אינפלציה וריבית נטענים מהקובץ הבא") #  
 tab1, tab2,tab3,tab4,tab5,tab6,tab7 = st.tabs(["📊 סימולטור מסלולים", "⚖️  תמהיל אופטימלי למשכנתא חדשה","תמהיל אופטימלי למחזור פנימי","מידע כללי", "הגדרות",'אישור עקרוני',"סימולטור לקוח"])
-
-
-with tab2:
-    st.subheader("תמהיל אופטימלי ללקיחת משכנתא חדשה")
-    mix = st.session_state.get("mix_tracks", [])
-    default_loan = sum(float(t.get("principal", 0) or 0.0) for t in mix) or 1_000_000.0
-    c1, c2, c3 ,c4, c5= st.columns(5)
-    loan_amount = c1.number_input("סכום הלוואה (₪)", min_value=1.0, value=float(default_loan), step=1.0, format="%.0f",key="loan_amount_input_tab2", help="הזן מספר ללא פסיקים. התצוגה בתוצאות תכלול פסיקים.")
-    ltv_input = c2.selectbox("הקצאת הון (LTV)", ['35%','50%','60%','75%','100%','any'])
-    monthly_income = c3.number_input("הכנסה חודשית נטו (₪)", min_value=1.0, value=20_000.0, step=1.0, format="%.0f", help="הזן מספר ללא פסיקים.")
-    
-    sensitivity = c4.selectbox("רגישות לריבית", ["נמוך", "בינוני", "גבוה"], index=0)
-    max_monthly_payment = c5.number_input("מקסימום החזר חודשי(₪)", min_value=1.0, value=6_000.0, step=1.0, format="%.0f")
-
-    c7a, c7b = st.columns([1, 1])
-
-    objective_mode = c7a.selectbox(
-        "מטרת האופטימיזציה",
-        ["total_cost", "pmt1", "balanced"],
-        index=0,
-        format_func=lambda k: {"total_cost":"מזעור עלות כוללת", "pmt1":"מזעור החזר חודשי ראשון", "balanced":"מאוזן (עלות↔החזר)"}[k]
-    )
-    alpha = 0.5
-    if objective_mode == "balanced":
-        alpha = c7b.slider("α (משקל עלות)", 0.0, 1.0, 0.7, 0.05)
-    
-    c8, c9 = st.columns(2)
-    prepay_window_key = c8.selectbox("חלון פירעון מוקדם חזוי", ["לא","כן","לא בטוח"], index=0)
-    durations_sel = [] # Placeholder
-    max_scan_years = c9.number_input("מקסימום שנים (עד)", min_value=12, max_value=40, value=30, step=1)
-    
-    # Logic requested: range(12, user_years + 1, 1) -> interpreted as Years -> converted to months
-    durations_months = [y * 12 for y in range(12, int(max_scan_years) + 1)]
-
-    bank_rate_input = con.bank_of_israel_rate 
-    prime_margin_input = con.prime_margin
-
-    if st.button("🔎 מצא תמהיל אופטימלי", use_container_width=True):
-        with st.spinner("מריץ אופטימיזציה..."):
-            sol_tracks, totals, err = optimize_mortgage(
-                calculate_schedule,
-                summarize_schedule,
-                loan_amount=float(loan_amount),
-                ltv_input=str(ltv_input),
-                monthly_income_net=float(monthly_income),
-                sensitivity=str(sensitivity),
-                prepay_window_key=str(prepay_window_key),
-                durations_months=durations_months,
-                bank_of_israel_rate=float(bank_rate_input),
-                prime_margin=float(prime_margin_input),
-                objective_mode=str(objective_mode),
-                alpha=float(alpha),
-                max_monthly_payment = max_monthly_payment,
-                routes_data_ori = None,
-            )
-        if err:
-            st.error(err); 
-            print(err)
-        else:
-            # Save to session (persistence)
-            st.session_state["opt_solution"] = {"tracks": sol_tracks, "totals": totals}
-            st.rerun()
-
-    # --- Render Logic (Persistent) ---
-    opt = st.session_state.get("opt_solution")
-    if opt:
-        sol_tracks = opt["tracks"]
-        totals = opt["totals"]
-
-        st.success("נמצא תמהיל אופטימלי (תוצאה שמורה)")
-        if getattr(con, 'manual_interest_increase', 0) > 0:
-            st.warning(f"⚠️ שימו לב: התוצאות כוללות תוספת ריבית ידנית של {con.manual_interest_increase}% (באופן יחסי).")
-        
-        # טבלה כולל אחוז מסך ההלוואה
-        cols = ["תדירות שינוי","סוג ריבית", "תקופה (חודשים)", "ריבית שנתית (%)", "קרן (₪)", "אחוז מההלוואה (%)"]
-        data, schedules = [], []
-        for tr in sol_tracks:
-            prc = float(tr["principal"])
-            # Calc share based on current loan_amount input or stored? 
-            # Ideally stored but for now using current input is approximation or we can store total loan.
-            # But 'sol_tracks' has principals.
-            total_principal_opt = sum(t["principal"] for t in sol_tracks)
-            share = (prc / total_principal_opt) * 100.0 if total_principal_opt else 0.0
-            data.append([tr['freq'],tr["rate_type"], int(tr["months"]), float(tr["rate"]), prc, round(share, 2)])
-            schedules.append(tr["schedule"])
-        
-        df_mix = pd.DataFrame({
-            cols[0]: [d[0] for d in data],
-            cols[1]: [d[1] for d in data],
-            cols[2]: [d[2] for d in data],
-            cols[3]: [d[3] for d in data],
-            cols[4]: [d[4] for d in data],
-            cols[5]: [d[5] for d in data]
-        })
-        st.dataframe(
-            df_mix.style.format({
-                cols[3]: "{:.2f}%",
-                cols[4]: "{:,.0f}",
-                cols[5]: "{:.2f}%"
-            }),
-            width="stretch"
-        )
-        cA, cB, cC, cD = st.columns(4)
-        cA.metric("סך הכל תשלומים", f"₪{totals['total_payment']:,.0f}")
-        cB.metric("סה\"כ ריבית", f"₪{totals['total_interest']:,.0f}")
-        cC.metric("סה\"כ הצמדה", f"₪{totals['total_indexation']:,.0f}")
-        cD.metric("החזר חודשי ראשון משוער", f"₪{totals['pmt1']:,.0f}")
-        
-        months, total_pmts = _aggregate_monthly_payment(schedules)
-        fig = go.Figure()
-        fig.add_trace(go.Scatter(x=months, y=total_pmts, mode="lines", name="תשלום חודשי כולל"))
-        fig.update_layout(title="זרם תשלומים חודשי (מצטבר מכל המסלולים)", xaxis_title="חודש", yaxis_title="₪")
-        st.plotly_chart(fig, width="stretch")
-
-        # --- Debug Visualization (Internal) ---
-        # Rendered only if 'debug_data' is present in totals
-        debug_data = totals.get("debug_data")
-        if debug_data:
-            st.divider()
-            st.markdown("### 🔍 ניתוח מעמיק למנוע האופטימיזציה")
-            
-            candidates = debug_data.get("candidates", [])
-            if candidates:
-                df_debug = pd.DataFrame(candidates)
-                
-                # Numeric conversion
-                cols_dbg = ["eff_cost", "base_norm", "pmt1_norm", "discount", "cost", "pmt1", "months"]
-                for c in cols_dbg:
-                     if c in df_debug.columns:
-                        df_debug[c] = pd.to_numeric(df_debug[c], errors='coerce').fillna(0)
-                        
-                # Display tweaks
-                df_debug["Years"] = df_debug["months"] / 12.0
-                df_debug["Size"] = df_debug["selected"].apply(lambda x: 15 if x else 8)
-                
-                d1, d2 = st.columns(2)
-                
-                # Chart 1
-                with d1:
-                    fig1 = px.scatter(
-                        df_debug, x="pmt1_norm", y="base_norm", color="type", symbol="type", size="Size",
-                        hover_data=["key", "Years", "cost", "pmt1", "discount", "eff_cost"],
-                        title="1. מפת יעילות (נמוך יותר = טוב יותר)",
-                        labels={"pmt1_norm": "החזר ראשון (מנורמל)", "base_norm": "עלות כוללת (מנורמלת)"},
-                        color_discrete_sequence=px.colors.qualitative.Bold  # Brighter colors
-                    )
-                    # Add chosen markers
-                    sel_df = df_debug[df_debug["selected"]==True]
-                    if not sel_df.empty:
-                        fig1.add_trace(go.Scatter(
-                            x=sel_df["pmt1_norm"], y=sel_df["base_norm"],
-                            mode='markers', marker=dict(size=20, color="red", symbol="circle-open", line=dict(width=3)),
-                            name="נבחר", showlegend=False
-                        ))
-                    st.plotly_chart(fig1, width="stretch")
-
-                # Chart 2
-                with d2:
-                    fig2 = px.scatter(
-                        df_debug, x="Years", y="eff_cost", color="type", symbol="type", size="Size",
-                        hover_data=["key", "base_norm", "pmt1_norm", "discount"],
-                        title="2. ציון משוקלל לפי אורך הלוואה",
-                         labels={"Years": "שנים", "eff_cost": "ציון (עלות אפקטיבית)"},
-                         color_discrete_sequence=px.colors.qualitative.Bold # Brighter colors
-                    )
-                    # Add chosen markers
-                    if not sel_df.empty:
-                        fig2.add_trace(go.Scatter(
-                            x=sel_df["Years"], y=sel_df["eff_cost"],
-                            mode='markers', marker=dict(size=20, color="red", symbol="circle-open", line=dict(width=3)),
-                            name="נבחר", showlegend=False
-                        ))
-                    st.plotly_chart(fig2, width="stretch")
-
-    if st.button("⬅️ החלף את התמהיל הידני בתוצאה האופטימלית", key="apply_optimal_tab2"):
-        if opt is None:
-             st.warning("לא נמצאה תוצאה אופטימלית להחלה.")
-        else:
-             sol_tracks = opt["tracks"]
-             st.session_state.mix_tracks = [
-                {
-                    "uid": f"opt{i+1}",
-                    "principal": float(tr["principal"]),
-                    "months": int(tr["months"]),
-                    "rate": float(tr["rate"]),
-                    "rate_type": tr["rate_type"],
-                    "freq": int(tr["freq"]),
-                    "schedule_t": tr["schedule_t"],
-                }
-                for i, tr in enumerate(sol_tracks)
-             ]
-             st.success("התמהיל הידני הוחלף בתוצאה האופטימלית.")
-             st.rerun()
-
-         
-with tab4:
-    # ----- גרף אינפלציה -----
-    infl_monthly = DATASTORE.infl_monthly
-    infl_series_yearly = [monthly_to_yearly(float(i)) * 100 for i in infl_monthly]
-    fig_infl = go.Figure()
-    fig_infl.add_trace(go.Scatter(x=list(range(1, len(infl_series_yearly) + 1)), y=infl_series_yearly, mode="lines", name="אינפלציה"))
-    fig_infl.update_layout(title="אינפלציה חודשית (מומר לשנתי)", xaxis_title="חודש", yaxis_title="שיעור (%)")
-    st.plotly_chart(fig_infl, width="stretch", key="inflation_tab4")
-
-    # ----- איור עוגן – NOMINAL -----
-    zero_series_nom = DATASTORE.zero_nominal.tolist()
-    zero_pct   = [100 * v for v in zero_series_nom]
-    base_zero  = zero_pct[0]
-    zero_pp    = [v - base_zero for v in zero_pct]
-    V_VALUES = [12, 18, 24, 30, 36, 48, 60, 84, 120]
-    fig_anchor_multi_NOMINAL = go.Figure()
-    for V in V_VALUES:
-        anchor_path = build_anchor(zero_series_nom, V=V, term_m=con.HORIZON)
-        base_val = anchor_path[0] * 100.0
-        anchor_pp = [(a * 100.0 - base_val) for a in anchor_path]
-        fig_anchor_multi_NOMINAL.add_trace(
-            go.Scatter(x=list(range(1, con.HORIZON + 1)), y=anchor_pp, mode="lines", name=f"V={V}", line=dict(shape="hv"))
-        )
-    fig_anchor_multi_NOMINAL.add_trace(go.Scatter(x=list(range(1, con.HORIZON + 1)), y=zero_pp, mode="lines", name="Zero nominal (Δpp)"))
-    fig_anchor_multi_NOMINAL.update_layout(title="איור עוגן נומינלי – השוואה בין מרווחי חידוש (Δ נק׳ אחוז)", xaxis_title="חודש", yaxis_title="שינוי (נק׳ אחוז)")
-    st.plotly_chart(fig_anchor_multi_NOMINAL, width="stretch", key="anchor_nominal_tab4")
-
-    # ----- איור עוגן – REAL -----
-    zero_series_real = DATASTORE.zero_real.tolist()
-    zero_pct   = [100 * v for v in zero_series_real]
-    base_zero  = zero_pct[0]
-    zero_pp    = [v - base_zero for v in zero_pct]
-    fig_anchor_multi_REAL = go.Figure()
-    for V in V_VALUES:
-        anchor_path = build_anchor(zero_series_real, V=V, term_m=con.HORIZON)
-        base_val = anchor_path[0] * 100.0
-        anchor_pp = [(a * 100.0 - base_val) for a in anchor_path]
-        fig_anchor_multi_REAL.add_trace(
-            go.Scatter(x=list(range(1, con.HORIZON + 1)), y=anchor_pp, mode="lines", name=f"V={V}", line=dict(shape="hv"))
-        )
-    fig_anchor_multi_REAL.add_trace(go.Scatter(x=list(range(1, con.HORIZON + 1)), y=zero_pp, mode="lines", name="Zero real (Δpp)"))
-    fig_anchor_multi_REAL.update_layout(title="איור עוגן ריאלי – השוואה בין מרווחי חידוש (Δ נק׳ אחוז)", xaxis_title="חודש", yaxis_title="שינוי (נק׳ אחוז)")
-    st.plotly_chart(fig_anchor_multi_REAL, width="stretch", key="anchor_real_tab4")
 
 with tab1:
     # --- State init ---
@@ -422,7 +311,7 @@ with tab1:
                     freq = None
 
             try:  
-
+                
                 default_rate = clac_rate_int.get_adjusted_rate(
                     con.ANCHOR_TRACK_MAP[rate_type],
                     capital_allocation,
@@ -437,7 +326,7 @@ with tab1:
                 #import pdb;pdb.set_trace()
 
             with c3:
-                rate  = c3.number_input("ריבית שנתית (%)", min_value=0.0, value=float(default_rate), step=0.0001, key=f"rate_{tr['uid']}")
+                rate  = c3.number_input("ריבית שנתית (%)", min_value=0.0, value=float(default_rate), step=0.0001,format="%.12f", key=f"rate_{tr['uid']}")
 
 
             
@@ -756,133 +645,196 @@ with tab1:
             key="dl_total_xlsx"
         )
 
-with tab6:
-    uploaded_file_tab6 = st.file_uploader("העלה קובץ json", type=["json"], key="pdf_up_tab6")
+with tab2:
+    st.subheader("תמהיל אופטימלי ללקיחת משכנתא חדשה")
+    mix = st.session_state.get("mix_tracks", [])
+    default_loan = sum(float(t.get("principal", 0) or 0.0) for t in mix) or 1_000_000.0
+    c1, c2, c3 ,c4, c5= st.columns(5)
+    loan_amount = c1.number_input("סכום הלוואה (₪)", min_value=1.0, value=float(default_loan), step=1.0, format="%.0f",key="loan_amount_input_tab2", help="הזן מספר ללא פסיקים. התצוגה בתוצאות תכלול פסיקים.")
+    ltv_input = c2.selectbox("הקצאת הון (LTV)", ['35%','50%','60%','75%','100%','any'])
+    monthly_income = c3.number_input("הכנסה חודשית נטו (₪)", min_value=1.0, value=20_000.0, step=1.0, format="%.0f", help="הזן מספר ללא פסיקים.")
     
-    @st.cache_data
-    def parse_api_json(file_content):
-        try:
-            return json.loads(file_content.decode("utf-8-sig"))
-        except Exception as e:
-            st.error(f"Cannot parse JSON file: {e}")
-            return None
+    sensitivity = c4.selectbox("רגישות לריבית", ["נמוך", "בינוני", "גבוה"], index=0)
+    max_monthly_payment = c5.number_input("מקסימום החזר חודשי(₪)", min_value=1.0, value=6_000.0, step=1.0, format="%.0f")
 
-    if uploaded_file_tab6 is not None:
-        api_json_first_loan = parse_api_json(uploaded_file_tab6.getvalue())
-        first_loan_tracks = convert_api_json_to_first_loan_tracks(api_json_first_loan)
-        
-        all_scenarios = {}
-        original_principal = 0
-        monthly_payment_orig = 0
-        max_period_orig = 0
+    c7a, c7b = st.columns([1, 1])
 
-        # 1. עיבוד מסלולים מקוריים
-        original_tracks_results = []
-        for i, tr in enumerate(first_loan_tracks):
-            freq_val = tr.get("freq")
-            prime_offset = 0
-            if tr["rate_type"] in ("מלצ","מצ",'מטח דולר','מטח יורו'):
-                freq_val = int(freq_val) if freq_val else 60
-            elif tr["rate_type"] == "פריים":
-                freq_val = 1
-                prime_offset = tr["rate"] - (con.bank_of_israel_rate + con.prime_margin)
-            
-            sch = calculate_schedule(tr["principal"], tr["months"], tr["rate"], tr["schedule_t"], tr["rate_type"], freq_val, con.prime_margin, prime_offset)
-            original_tracks_results.append((f"orig_{i}", sch))
-            original_principal += tr["principal"]
-            monthly_payment_orig += sch[0][2]
-            max_period_orig = max(max_period_orig, tr["months"])
-        
-        all_scenarios["תמהיל מוצע (מהקובץ)"] = original_tracks_results
-        
-        # 2. הרצת אופטימיזציה
-        with st.spinner("מחשב תמהיל אופטימלי להשוואה..."):
-            opt_sol, opt_totals, opt_err = optimize_mortgage(
-                calculate_schedule, summarize_schedule,
-                loan_amount=float(original_principal),
-                ltv_input='75%',
-                monthly_income_net=monthly_payment_orig * 3,
-                sensitivity="בינוני",
-                prepay_window_key="לא",
-                durations_months=[m for m in range(12, max_period_orig, 1)],
-                bank_of_israel_rate=con.bank_of_israel_rate,
-                prime_margin=con.prime_margin,
-                objective_mode="balanced",
-                alpha=0.5,
-                max_monthly_payment=monthly_payment_orig,
-                routes_data_ori=None
+    objective_mode = c7a.selectbox(
+        "מטרת האופטימיזציה",
+        ["total_cost", "pmt1", "balanced"],
+        index=0,
+        format_func=lambda k: {"total_cost":"מזעור עלות כוללת", "pmt1":"מזעור החזר חודשי ראשון", "balanced":"מאוזן (עלות↔החזר)"}[k]
+    )
+    alpha = 0.5
+    if objective_mode == "balanced":
+        alpha = c7b.slider("α (משקל עלות)", 0.0, 1.0, 0.7, 0.05)
+    
+    c8, c9 = st.columns(2)
+    prepay_window_key = c8.selectbox("חלון פירעון מוקדם חזוי", ["לא","כן","לא בטוח"], index=0)
+    durations_sel = [] # Placeholder
+    max_scan_years = c9.number_input("מקסימום שנים (עד)", min_value=12, max_value=40, value=30, step=1)
+    
+    # Logic requested: range(12, user_years + 1, 1) -> interpreted as Years -> converted to months
+    durations_months = max_scan_years*12#[y * 12 for y in range(12, int(max_scan_years) + 1)]
+
+    bank_rate_input = con.bank_of_israel_rate 
+    prime_margin_input = con.prime_margin
+
+    if st.button("🔎 מצא תמהיל אופטימלי", use_container_width=True):
+        with st.spinner("מריץ אופטימיזציה..."): 
+            sol_tracks, totals, err = optimize_mortgage(
+                float(loan_amount),
+                str(ltv_input),
+                float(monthly_income),
+                str(sensitivity),
+                str(prepay_window_key),
+                con.durations_months(max_scan_years*12),
+                float(bank_rate_input),
+                float(prime_margin_input),
+                str(objective_mode),
+                float(alpha),
+                max_monthly_payment,
+                None,#routes_data_ori = 
             )
             
-            if not opt_err:
-                optimal_tracks_results = []
-                opt_display_data = []
-                for i, tr in enumerate(opt_sol):
-                    optimal_tracks_results.append((f"opt_{i}", tr["schedule"]))
-                    opt_display_data.append({
-                        "סוג מסלול": tr["rate_type"],
-                        "סכום (₪)": f"{tr['principal']:,.0f}",
-                        "תקופה (חודשים)": tr["months"],
-                        "ריבית (%)": f"{tr['rate']:.2f}%",
-                        "החזר חודשי": f"{tr['schedule'][0][2]:,.0f} ₪"
-                    })
-                all_scenarios["הסל האופטימלי"] = optimal_tracks_results
+        if err:
+            st.error(err); 
+            print(err)
+        else:
+            # Save to session (persistence)
+            st.session_state["opt_solution"] = {"tracks": sol_tracks, "totals": totals}
+            st.rerun()
 
-        # 3. לולאת תצוגה והשוואה
-        scenario_summaries = {}
-        for name, tracks in all_scenarios.items():
-            st.markdown(f"### {name}")
-            
-            # חישוב נתונים מסכמים לסנריו
-            t_p, t_i, t_k = 0, 0, 0
-            first_pmt_sum = 0
-            max_months = 0
-            
-            for _, sch in tracks:
-                p, i, k = summarize_schedule(sch)
-                t_p += p; t_i += i; t_k += k
-                first_pmt_sum += sch[0][2]
-                max_months = max(max_months, len(sch))
-            
-            # חישוב החזר מקסימלי לאורך כל חיי המשכנתא
-            max_pmt = 0
-            for m_idx in range(max_months):
-                current_month_total = sum(sch[m_idx][2] for _, sch in tracks if m_idx < len(sch))
-                if current_month_total > max_pmt:
-                    max_pmt = current_month_total
-            
-            total_cost = t_p + t_i + t_k
-            scenario_summaries[name] = {"total": total_cost}
+    # --- Render Logic (Persistent) ---
+    opt = st.session_state.get("opt_solution")
+    if opt:
+        sol_tracks = opt["tracks"]
+        totals = opt["totals"]
 
-            # תצוגת מטריקות
-            m_col1, m_col2, m_col3 = st.columns(3)
-            m_col1.metric("סכום הלוואה", f"₪{original_principal:,.0f}")
-            m_col2.metric("תקופה מקסימלית", f"{max_months // 12} שנים ({max_months} חודשים)")
-            m_col3.metric("סה-כ החזר כולל", f"₪{total_cost:,.0f}")
-
-            m_col4, m_col5 = st.columns(2)
-            m_col4.metric("החזר חודשי ראשון", f"₪{first_pmt_sum:,.0f}")
-            m_col5.metric("החזר חודשי מקסימלי", f"₪{max_pmt:,.0f}", delta=f"{max_pmt - first_pmt_sum:,.0f}+", delta_color="inverse")
-
-            # הצגת פירוט למסלול אופטימלי
-            if name == "הסל האופטימלי" and not opt_err:
-                st.write("**פירוט מסלולי התמהיל האופטימלי:**")
-                st.table(opt_display_data)
-            
-            st.divider()
-
+        st.success("נמצא תמהיל אופטימלי (תוצאה שמורה)")
+        if getattr(con, 'manual_interest_increase', 0) > 0:
+            st.warning(f"⚠️ שימו לב: התוצאות כוללות תוספת ריבית ידנית של {con.manual_interest_increase}% (באופן יחסי).")
         
+        # טבלה כולל אחוז מסך ההלוואה
+        cols = ["תדירות שינוי","סוג ריבית", "תקופה (חודשים)", "ריבית שנתית (%)", "קרן (₪)", "אחוז מההלוואה (%)"]
+        data, schedules = [], []
+        for tr in sol_tracks:
+            prc = float(tr["principal"])
+            # Calc share based on current loan_amount input or stored? 
+            # Ideally stored but for now using current input is approximation or we can store total loan.
+            # But 'sol_tracks' has principals.
+            total_principal_opt = sum(t["principal"] for t in sol_tracks)
+            share = (prc / total_principal_opt) * 100.0 if total_principal_opt else 0.0
+            data.append([tr['freq'],tr["rate_type"], int(tr["months"]), float(tr["rate"]), prc, round(share, 2)])
+            schedules.append(tr["schedule"])
+        
+        df_mix = pd.DataFrame({
+            cols[0]: [d[0] for d in data],
+            cols[1]: [d[1] for d in data],
+            cols[2]: [d[2] for d in data],
+            cols[3]: [d[3] for d in data],
+            cols[4]: [d[4] for d in data],
+            cols[5]: [d[5] for d in data]
+        })
+        st.dataframe(
+            df_mix.style.format({
+                cols[3]: "{:.2f}%",
+                cols[4]: "{:,.0f}",
+                cols[5]: "{:.2f}%"
+            }),
+            width="stretch"
+        )
+        cA, cB, cC, cD = st.columns(4)
+        cA.metric("סך הכל תשלומים", f"₪{totals['total_payment']:,.0f}")
+        cB.metric("סה\"כ ריבית", f"₪{totals['total_interest']:,.0f}")
+        cC.metric("סה\"כ הצמדה", f"₪{totals['total_indexation']:,.0f}")
+        cD.metric("החזר חודשי ראשון משוער", f"₪{totals['pmt1']:,.0f}")
+        
+        months, total_pmts = _aggregate_monthly_payment(schedules)
+        fig = go.Figure()
+        fig.add_trace(go.Scatter(x=months, y=total_pmts, mode="lines", name="תשלום חודשי כולל"))
+        fig.update_layout(title="זרם תשלומים חודשי (מצטבר מכל המסלולים)", xaxis_title="חודש", yaxis_title="₪")
+        st.plotly_chart(fig, width="stretch")
 
-        # 4. סיכום חיסכון
-        if len(scenario_summaries) > 1:
-            best_name = min(scenario_summaries, key=lambda x: scenario_summaries[x]["total"])
-            worst_name = max(scenario_summaries, key=lambda x: scenario_summaries[x]["total"])
+        # --- Debug Visualization (Internal) ---
+        # Rendered only if 'debug_data' is present in totals
+        debug_data = totals.get("debug_data")
+        if debug_data:
+            st.divider()
+            st.markdown("### 🔍 ניתוח מעמיק למנוע האופטימיזציה")
             
-            money_save = scenario_summaries[worst_name]['total'] - scenario_summaries[best_name]['total']
-            
-            st.balloons()
-            st.success(f"🏆 **התמהיל המשתלם ביותר:** {best_name}")
-            st.metric("פוטנציאל חיסכון כולל", f"{money_save:,.0f} ₪", delta_color="normal")           
+            candidates = debug_data.get("candidates", [])
+            if candidates:
+                df_debug = pd.DataFrame(candidates)
+                
+                # Numeric conversion
+                cols_dbg = ["eff_cost", "base_norm", "pmt1_norm", "discount", "cost", "pmt1", "months"]
+                for c in cols_dbg:
+                     if c in df_debug.columns:
+                        df_debug[c] = pd.to_numeric(df_debug[c], errors='coerce').fillna(0)
+                        
+                # Display tweaks
+                df_debug["Years"] = df_debug["months"] / 12.0
+                df_debug["Size"] = df_debug["selected"].apply(lambda x: 15 if x else 8)
+                
+                d1, d2 = st.columns(2)
+                
+                # Chart 1
+                with d1:
+                    fig1 = px.scatter(
+                        df_debug, x="pmt1_norm", y="base_norm", color="type", symbol="type", size="Size",
+                        hover_data=["key", "Years", "cost", "pmt1", "discount", "eff_cost"],
+                        title="1. מפת יעילות (נמוך יותר = טוב יותר)",
+                        labels={"pmt1_norm": "החזר ראשון (מנורמל)", "base_norm": "עלות כוללת (מנורמלת)"},
+                        color_discrete_sequence=px.colors.qualitative.Bold  # Brighter colors
+                    )
+                    # Add chosen markers
+                    sel_df = df_debug[df_debug["selected"]==True]
+                    if not sel_df.empty:
+                        fig1.add_trace(go.Scatter(
+                            x=sel_df["pmt1_norm"], y=sel_df["base_norm"],
+                            mode='markers', marker=dict(size=20, color="red", symbol="circle-open", line=dict(width=3)),
+                            name="נבחר", showlegend=False
+                        ))
+                    st.plotly_chart(fig1, width="stretch")
 
+                # Chart 2
+                with d2:
+                    fig2 = px.scatter(
+                        df_debug, x="Years", y="eff_cost", color="type", symbol="type", size="Size",
+                        hover_data=["key", "base_norm", "pmt1_norm", "discount"],
+                        title="2. ציון משוקלל לפי אורך הלוואה",
+                         labels={"Years": "שנים", "eff_cost": "ציון (עלות אפקטיבית)"},
+                         color_discrete_sequence=px.colors.qualitative.Bold # Brighter colors
+                    )
+                    # Add chosen markers
+                    if not sel_df.empty:
+                        fig2.add_trace(go.Scatter(
+                            x=sel_df["Years"], y=sel_df["eff_cost"],
+                            mode='markers', marker=dict(size=20, color="red", symbol="circle-open", line=dict(width=3)),
+                            name="נבחר", showlegend=False
+                        ))
+                    st.plotly_chart(fig2, width="stretch")
+
+    if st.button("⬅️ החלף את התמהיל הידני בתוצאה האופטימלית", key="apply_optimal_tab2"):
+        if opt is None:
+             st.warning("לא נמצאה תוצאה אופטימלית להחלה.")
+        else:
+             sol_tracks = opt["tracks"]
+             st.session_state.mix_tracks = [
+                {
+                    "uid": f"opt{i+1}",
+                    "principal": float(tr["principal"]),
+                    "months": int(tr["months"]),
+                    "rate": float(tr["rate"]),
+                    "rate_type": tr["rate_type"],
+                    "freq": int(tr["freq"]),
+                    "schedule_t": tr["schedule_t"],
+                }
+                for i, tr in enumerate(sol_tracks)
+             ]
+             st.success("התמהיל הידני הוחלף בתוצאה האופטימלית.")
+             st.rerun()
 
 with tab3:
     st.subheader("מחזור משכנתא")
@@ -1017,34 +969,8 @@ with tab3:
                 "חיסכון %": saving_pct
             }, total_payment
 
-    @st.cache_resource
-    def run_optimize(loan_amount, first_payment, max_months):
-        return optimize_mortgage(
-            calculate_schedule,
-            summarize_schedule,
-            loan_amount=float(loan_amount),
-            ltv_input=con.defult_capital_allocation,
-            monthly_income_net=float(first_payment * 3.5),
-            sensitivity="בינוני",
-            prepay_window_key="לא",
-            durations_months=list(range(12, max_months, 1)),
-            bank_of_israel_rate=con.bank_of_israel_rate,
-            prime_margin=con.prime_margin,
-            objective_mode="balanced",
-            alpha=0.5,
-            max_monthly_payment=first_payment,
-        )
 
-    @st.cache_data
-    def get_all_scenarios_cached(file_content, file_name, ltv, cache_id):
-        """
-        cache_id מאפשר לנו 'להכריח' את הפונקציה לרוץ מחדש גם עבור אותו קובץ
-        """
-        api_json = json.loads(file_content.decode("utf-8-sig"))
-        tracks = convert_api_json_to_loan_tracks(api_json)
-        ori, upd, non, opt = create_4_candidate_mortages(tracks, ltv)
-        best = find_best_mortage(tracks, ltv)
-        return ori, upd, non, opt, best
+
     # אתחול ה-State אם הוא לא קיים
     if "cache_id" not in st.session_state:
         st.session_state.cache_id = 0
@@ -1054,30 +980,25 @@ with tab3:
     col_header, col_reset = st.columns([4, 1])
     with col_header:
         st.subheader("מחזור משכנתא")
-    with col_reset:
-        if st.button("🔄 רענן חישוב"):
-            st.session_state.cache_id += 1 # שינוי ה-ID יגרום ל-Cache להיחשב מחדש
-            st.rerun()
+
 
     uploaded_file = st.file_uploader("העלה קובץ json", type=["json"], key="pdf_up_tab3")
     capital_allocation = st.selectbox("הקצאת הון (LTV)", options=["35%", "50%", "60%", "75%", "100%", "any"], key="cap_tab3")
 
     if uploaded_file and capital_allocation:
         file_bytes = uploaded_file.getvalue()
-        current_hash = hash(file_bytes) # זיהוי לפי תוכן הקובץ ולא רק לפי השם
-
-        # אם זה קובץ חדש (תוכן שונה), נעלה את ה-ID כדי לנקות שאריות
-        if st.session_state.last_file_hash != current_hash:
-            st.session_state.cache_id += 1
-            st.session_state.last_file_hash = current_hash
 
         # הרצת החישוב עם ה-cache_id הנוכחי
-        ori_m, upd_m, non_m, opt_m, best_res = get_all_scenarios_cached(
-            file_bytes, 
-            uploaded_file.name, 
-            capital_allocation,
-            st.session_state.cache_id
-        )
+        with st.spinner("מבצע חישובים"):
+            print("file_bytes")
+            api_json = json.loads(file_bytes.decode("utf-8-sig"))
+            print("api_json")
+            tracks = convert_api_json_to_loan_tracks(api_json)
+            print("tracks")
+            ori_m, upd_m, non_m, opt_m = create_4_candidate_mortages(tracks, capital_allocation)
+            print("ori_m, upd_m, non_m, opt_m ")
+            best_res = find_best_mortage(tracks, capital_allocation)
+
         
         options_map = {
             "משכנתא נוכחית": ori_m, "משכנתא מעודכנת": upd_m,
@@ -1094,7 +1015,7 @@ with tab3:
 
         # --- 4. השוואה (Multiselect) ---
         # --- 4. השוואה (Multiselect) ---
-        selected = st.multiselect("בחרי אילו משכנתאות להשוות", options=list(options_map.keys()), key="select_scenarios_tab3")
+        selected = list(options_map.keys())
 
         if selected:
             fig_comp = go.Figure()
@@ -1187,179 +1108,50 @@ with tab3:
         for label, data in options_map.items():
             with st.expander(f"פירוט: {label}"):
                 plot_table_and_graf(data)
+         
+with tab4:
+    # ----- גרף אינפלציה -----
+    infl_monthly = DATASTORE.infl_monthly
+    infl_series_yearly = [monthly_to_yearly(float(i)) * 100 for i in infl_monthly]
+    fig_infl = go.Figure()
+    fig_infl.add_trace(go.Scatter(x=list(range(1, len(infl_series_yearly) + 1)), y=infl_series_yearly, mode="lines", name="אינפלציה"))
+    fig_infl.update_layout(title="אינפלציה חודשית (מומר לשנתי)", xaxis_title="חודש", yaxis_title="שיעור (%)")
+    st.plotly_chart(fig_infl, width="stretch", key="inflation_tab4")
 
-@st.cache_data
-def get_all_schedules(sim_p, sim_m):
-    # פונקציית עזר פנימית לחישוב מסלול בודד
-    def quick_calc(amt, t_type, freq, name, months):
-        try:
-            rate = float(clac_rate_int.get_adjusted_rate(con.ANCHOR_TRACK_MAP[t_type], '75%', freq, months))
-        except: 
-            rate = 4.0
-        sch = calculate_schedule(amt, months, rate, "שפיצר", t_type, freq, con.prime_margin, 0)
-        return {"name": name, "sch": sch, "rate": rate, "principal": amt}
+    # ----- איור עוגן – NOMINAL -----
+    zero_series_nom = DATASTORE.zero_nominal.tolist()
+    zero_pct   = [100 * v for v in zero_series_nom]
+    base_zero  = zero_pct[0]
+    zero_pp    = [v - base_zero for v in zero_pct]
+    V_VALUES = [12, 18, 24, 30, 36, 48, 60, 84, 120]
+    fig_anchor_multi_NOMINAL = go.Figure()
+    for V in V_VALUES:
+        anchor_path = build_anchor(zero_series_nom, V=V, term_m=con.HORIZON)
+        base_val = anchor_path[0] * 100.0
+        anchor_pp = [(a * 100.0 - base_val) for a in anchor_path]
+        fig_anchor_multi_NOMINAL.add_trace(
+            go.Scatter(x=list(range(1, con.HORIZON + 1)), y=anchor_pp, mode="lines", name=f"V={V}", line=dict(shape="hv"))
+        )
+    fig_anchor_multi_NOMINAL.add_trace(go.Scatter(x=list(range(1, con.HORIZON + 1)), y=zero_pp, mode="lines", name="Zero nominal (Δpp)"))
+    fig_anchor_multi_NOMINAL.update_layout(title="איור עוגן נומינלי – השוואה בין מרווחי חידוש (Δ נק׳ אחוז)", xaxis_title="חודש", yaxis_title="שינוי (נק׳ אחוז)")
+    st.plotly_chart(fig_anchor_multi_NOMINAL, width="stretch", key="anchor_nominal_tab4")
 
-    # חישוב כל הסלים מראש
-    data = {
-        "סל אחיד 1": [quick_calc(sim_p, "קלצ", None, "קל\"צ מלא", sim_m)],
-        "סל אחיד 2": [
-            quick_calc(sim_p/3, "קלצ", None, "קל\"צ (1/3)", sim_m),
-            quick_calc(sim_p/3, "פריים", 1, "פריים (1/3)", sim_m),
-            quick_calc(sim_p/3, "מצ", 60, "משתנה (1/3)", sim_m)
-        ],
-        "סל אחיד 3": [
-            quick_calc(sim_p/2, "קלצ", None, "קל\"צ (1/2)", sim_m),
-            quick_calc(sim_p/2, "פריים", 1, "פריים (1/2)", sim_m)
-        ]
-    }
-    return data
-
-with tab7:
-    st.markdown("<h3 style='text-align: center; color: #E67E22;'>מחשבון משכנתא - סלים אחידים</h3>", unsafe_allow_html=True)
-    
-    # כניסת נתונים
-    col_input1, col_input2 = st.columns(2)
-    with col_input1:
-        sim_p = st.select_slider("סכום ההלוואה (₪)", options=list(range(150000, 4000001, 50000)), value=1000000)
-    with col_input2:
-        sim_y = st.select_slider("תקופת ההחזר (שנים)", options=list(range(4, 31)), value=20)
-    
-    sim_m = sim_y * 12
-
-    # --- חישוב מהיר (שולף מהקאש אם אין שינוי) ---
-    all_schedules = get_all_schedules(sim_p, sim_m)
-
-    # בחירת הסל להצגה ויזואלית
-    selected_sal = st.radio("בחר סל להצגה:", list(all_schedules.keys()), horizontal=True)
-    current_tracks = all_schedules[selected_sal]
-
-    # --- מכאן והלאה קוד התצוגה שלך (ללא שינוי לוגי) ---
-    total_pay, total_int, total_idx, first_pmt = 0, 0, 0, 0
-    for track in current_tracks:
-        p, i, k = summarize_schedule(track["sch"])
-        total_pay += (p + i + k)
-        total_int += i
-        total_idx += k
-        first_pmt += track["sch"][0][2]
-    avg_rate = sum(t["rate"] * (t["principal"]/sim_p) for t in current_tracks)
-
-    # --- 5. תצוגת כרטיסיות נתונים ---
-    st.markdown("""
-        <style>
-        .result-box { background-color: #E8F6F3; padding: 12px; border-radius: 10px; margin-bottom: 8px; border-right: 6px solid #27AE60; font-size: 16px; }
-        .label { float: right; font-weight: bold; color: #34495E; }
-        .value { float: left; font-weight: bold; color: #27AE60; }
-        </style>
-    """, unsafe_allow_html=True)
-
-    st.markdown(f"<div class='result-box'><span class='label'>סכום ההלוואה</span><span class='value'>₪{sim_p:,.0f}</span><div style='clear:both;'></div></div>", unsafe_allow_html=True)
-    st.markdown(f"<div class='result-box'><span class='label'>סה\"כ החזר משוער</span><span class='value'>₪{total_pay:,.0f}</span><div style='clear:both;'></div></div>", unsafe_allow_html=True)
-    st.markdown(f"<div class='result-box'><span class='label'>מזה הצמדה למדד</span><span class='value'>₪{total_idx:,.0f}</span><div style='clear:both;'></div></div>", unsafe_allow_html=True)
-    st.markdown(f"<div class='result-box'><span class='label'>החזר חודשי ראשון</span><span class='value'>₪{first_pmt:,.0f}</span><div style='clear:both;'></div></div>", unsafe_allow_html=True)
-
-    # --- 6. פירוט מסלולים ---
-    st.write("### פירוט מסלולים")
-    for t in current_tracks:
-        st.markdown(f"""
-            <div style="background-color: #E67E22; color: white; padding: 15px; border-radius: 10px; margin-bottom: 10px; display: flex; justify-content: space-between; align-items: center;">
-                <div style="font-weight: bold; width: 35%; text-align: right;">{t['name']}</div>
-                <div style="text-align: center; width: 25%;">ריבית: {t['rate']:.2f}%</div>
-                <div style="text-align: left; width: 40%;">סכום: ₪{t['principal']:,.0f}</div>
-            </div>
-        """, unsafe_allow_html=True)
-
-    # --- 7. גרף זרם תשלומים משולש (קרן, ריבית, הצמדה) ---
-    st.write("### התפתחות החזרים לאורך זמן")
-    months_axis = list(range(1, sim_m + 1))
-    
-    # חישוב זרמים מצטברים
-    principal_flow = [sum(t["sch"][m-1][5] for t in current_tracks if m <= len(t["sch"])) for m in months_axis]
-    interest_flow = [sum(t["sch"][m-1][3] for t in current_tracks if m <= len(t["sch"])) for m in months_axis]
-    indexation_flow = [sum(t["sch"][m-1][6] for t in current_tracks if m <= len(t["sch"])) for m in months_axis]
-
-    fig_robin = go.Figure()
-    fig_robin.add_trace(go.Scatter(x=months_axis, y=principal_flow, mode='lines', name='פירעון קרן', line=dict(color='#27AE60', width=3)))
-    fig_robin.add_trace(go.Scatter(x=months_axis, y=interest_flow, mode='lines', name='תשלום ריבית', line=dict(color='#E67E22', width=3)))
-    fig_robin.add_trace(go.Scatter(x=months_axis, y=indexation_flow, mode='lines', name='רכיב הצמדה', line=dict(color='#3498DB', width=3, dash='dot')))
-    
-    fig_robin.update_layout(
-        xaxis_title="חודשים", yaxis_title="₪",
-        hovermode="x unified", paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)',
-        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="center", x=0.5)
-    )
-    st.plotly_chart(fig_robin, use_container_width=True)
-
-# ------------------------------ TAB 5: DEFINITIONS ------------------------------
-import pprint
-import importlib
-
-def save_config_to_file(updates: dict):
-    """
-    Reads config_v2.py, replaces variable assignments with new values,
-    and writes it back. Supports both scalars and dictionaries.
-    """
-    #config_path = os.path.join(os.getcwd(),"config.py")
-    script_dir = Path(__file__).parent.resolve()
-    config_path = script_dir / "config.py"
-    try:
-        with open(config_path, "r", encoding="utf-8") as f:
-            content = f.read()
-    except Exception as e:
-        st.error(f"Failed to read config file: {e}")
-        return
-
-    for key, value in updates.items():
-        if isinstance(value, (dict, list)):
-            formatted_value = pprint.pformat(value, width=100, sort_dicts=False)
-            
-            # Simple prefix match for top-level assignment
-            prefix_pattern = rf'(^|\n){key}\s*(?::[^=]+)?=\s*'
-            
-            # We assume unique variable names at top level
-            p_match = re.search(prefix_pattern, content)
-            if p_match:
-                start_idx = p_match.end()
-                # Find end of this structure (balanced braces)
-                open_char = content[start_idx]
-                close_char = '}' if open_char == '{' else ']'
-                
-                cnt = 0
-                end_idx = start_idx
-                in_struct = False
-                
-                # Scan forward
-                for i in range(start_idx, len(content)):
-                    ch = content[i]
-                    if ch == open_char:
-                        cnt += 1
-                        in_struct = True
-                    elif ch == close_char:
-                        cnt -= 1
-                    
-                    if in_struct and cnt == 0:
-                        end_idx = i + 1
-                        break
-                
-                if end_idx > start_idx:
-                    content = content[:start_idx] + formatted_value + content[end_idx:]
-
-        else:
-            # Handle scalars
-            if isinstance(value, str):
-                replacement = f'{key} = "{value}"'
-                pattern = rf'{key}\s*=\s*[\'"][^\'"]*[\'"]'
-            else:
-                replacement = f'{key} = {value}'
-                pattern = rf'{key}\s*=\s*[\d\.]+'
-
-            if re.search(pattern, content):
-                content = re.sub(pattern, replacement, content)
-
-    try:
-        with open(config_path, "w", encoding="utf-8") as f:
-            f.write(content)
-    except Exception as e:
-        st.error(f"Failed to write config file: {e}")
+    # ----- איור עוגן – REAL -----
+    zero_series_real = DATASTORE.zero_real.tolist()
+    zero_pct   = [100 * v for v in zero_series_real]
+    base_zero  = zero_pct[0]
+    zero_pp    = [v - base_zero for v in zero_pct]
+    fig_anchor_multi_REAL = go.Figure()
+    for V in V_VALUES:
+        anchor_path = build_anchor(zero_series_real, V=V, term_m=con.HORIZON)
+        base_val = anchor_path[0] * 100.0
+        anchor_pp = [(a * 100.0 - base_val) for a in anchor_path]
+        fig_anchor_multi_REAL.add_trace(
+            go.Scatter(x=list(range(1, con.HORIZON + 1)), y=anchor_pp, mode="lines", name=f"V={V}", line=dict(shape="hv"))
+        )
+    fig_anchor_multi_REAL.add_trace(go.Scatter(x=list(range(1, con.HORIZON + 1)), y=zero_pp, mode="lines", name="Zero real (Δpp)"))
+    fig_anchor_multi_REAL.update_layout(title="איור עוגן ריאלי – השוואה בין מרווחי חידוש (Δ נק׳ אחוז)", xaxis_title="חודש", yaxis_title="שינוי (נק׳ אחוז)")
+    st.plotly_chart(fig_anchor_multi_REAL, width="stretch", key="anchor_real_tab4")
 
 with tab5:
     st.header("⚙️ הגדרות מערכת מתקדמות")
@@ -1389,6 +1181,12 @@ with tab5:
             def_idx = 0
         new_default_ltv = c6.selectbox("LTV ברירת מחדל", capital_opts, index=def_idx)
 
+        st.divider()
+        c7, c8 = st.columns(2)
+        with c7:
+            new_no_saving_flag = c7.number_input("מינימום חיסכון", value=float(con.no_savings), step=0.1)
+        with c8:
+            new_diff_between_opt =  c8.number_input("הפרש להעדפה של חסכון פנימי וחיצוני", value=float(con.diff_between_opt), step=0.1) 
         st.divider()
 
         # --- Tables ---
@@ -1555,9 +1353,12 @@ with tab5:
                 "SPREADS": new_spreads,
                 "LOAN_ADJ_RULES": new_loan_adj_rules,
                 "SENSITIVITY_DISCOUNT": new_sens_disc,
-                "PREPAY_DISCOUNT": new_prepay_disc
+                "PREPAY_DISCOUNT": new_prepay_disc,
+                "no_savings":new_no_saving_flag,
+                "diff_between_opt":new_diff_between_opt
             }
             save_config_to_file(updates)
+            sync_ok, sync_error = sync_config_to_api(updates)
             
             # Explicitly reload the config module to ensure new values are picked up
             # Robust reload logic:
@@ -1571,9 +1372,221 @@ with tab5:
                 # However, to be safe and satisfy "Must reload":
               #  pass
 
-            st.success("ההגדרות נשמרו בהצלחה! מבצע רענון...")
+            if sync_ok:
+                st.success("ההגדרות נשמרו בהצלחה וסונכרנו ל-API! מבצע רענון...")
+            else:
+                st.warning(f"ההגדרות נשמרו מקומית, אך סנכרון API נכשל: {sync_error}")
             import time
             time.sleep(1)
             st.rerun()
 
+with tab6:
+    uploaded_file_tab6 = st.file_uploader("העלה קובץ json", type=["json"], key="pdf_up_tab6")
+    
+    @st.cache_data
+    def parse_api_json(file_content):
+        try:
+            return json.loads(file_content.decode("utf-8-sig"))
+        except Exception as e:
+            st.error(f"Cannot parse JSON file: {e}")
+            return None
 
+    if uploaded_file_tab6 is not None:
+        api_json_first_loan = parse_api_json(uploaded_file_tab6.getvalue())
+        first_loan_tracks = convert_api_json_to_first_loan_tracks(api_json_first_loan)
+        
+        all_scenarios = {}
+        original_principal = 0
+        monthly_payment_orig = 0
+        max_period_orig = 0
+
+        # 1. עיבוד מסלולים מקוריים
+        original_tracks_results = []
+        ori_display_data = []
+        for i, tr in enumerate(first_loan_tracks):
+            freq_val = tr.get("freq")
+            prime_offset = 0
+            if tr["rate_type"] in ("מלצ","מצ",'מטח דולר','מטח יורו'):
+                freq_val = int(freq_val) if freq_val else 60
+            elif tr["rate_type"] == "פריים":
+                freq_val = 1
+                prime_offset = tr["rate"] - (con.bank_of_israel_rate + con.prime_margin)
+            
+            sch = calculate_schedule(tr["principal"], tr["months"], tr["rate"], tr["schedule_t"], tr["rate_type"], freq_val, con.prime_margin, prime_offset)
+            original_tracks_results.append((f"orig_{i}", sch))
+            original_principal += tr["principal"]
+            monthly_payment_orig += sch[0][2]
+            max_period_orig = max(max_period_orig, tr["months"])
+            ori_display_data.append({
+                        "סוג מסלול": tr["rate_type"],
+                        "סכום (₪)": f"{tr['principal']:,.0f}",
+                        "תקופה (חודשים)": tr["months"],
+                        "ריבית (%)": f"{tr['rate']:.2f}%",
+                        "החזר חודשי": f"{sch[0][2]:,.0f} ₪"
+                    })
+        
+        all_scenarios["תמהיל מוצע (מהקובץ)"] = original_tracks_results
+        
+        # 2. הרצת אופטימיזציה
+        with st.spinner("מחשב תמהיל אופטימלי להשוואה..."):
+            opt_sol, opt_totals, opt_err = optimize_mortgage(
+                float(original_principal),#loan_amount=
+                con.defult_capital_allocation,#ltv_input='75%',
+                float(monthly_payment_orig * con.monthly_income_factor),#monthly_income_net=monthly_payment_orig * 3,
+                con.sensitivity,#sensitivity=
+                con.prepay_window_key,
+                con.durations_months(max_period_orig),#durations_months=[m for m in range(12, max_period_orig, 1)],
+                con.bank_of_israel_rate,
+                con.prime_margin,
+                con.objective_mode,
+                con.alpha,
+                monthly_payment_orig,
+                None # routes_data_ori=
+            )
+            
+            if not opt_err:
+                optimal_tracks_results = []
+                opt_display_data = []
+                for i, tr in enumerate(opt_sol):
+                    optimal_tracks_results.append((f"opt_{i}", tr["schedule"]))
+                    opt_display_data.append({
+                        "סוג מסלול": tr["rate_type"],
+                        "סכום (₪)": f"{tr['principal']:,.0f}",
+                        "תקופה (חודשים)": tr["months"],
+                        "ריבית (%)": f"{tr['rate']:.2f}%",
+                        "החזר חודשי": f"{tr['schedule'][0][2]:,.0f} ₪"
+                    })
+                all_scenarios["הסל האופטימלי"] = optimal_tracks_results
+
+        # 3. לולאת תצוגה והשוואה
+        scenario_summaries = {}
+        for name, tracks in all_scenarios.items():
+            st.markdown(f"### {name}")
+            
+            # חישוב נתונים מסכמים לסנריו
+            t_p, t_i, t_k = 0, 0, 0
+            first_pmt_sum = 0
+            max_months = 0
+            
+            for _, sch in tracks:
+                p, i, k = summarize_schedule(sch)
+                t_p += p; t_i += i; t_k += k
+                first_pmt_sum += sch[0][2]
+                max_months = max(max_months, len(sch))
+            
+            # חישוב החזר מקסימלי לאורך כל חיי המשכנתא
+            max_pmt = 0
+            for m_idx in range(max_months):
+                current_month_total = sum(sch[m_idx][2] for _, sch in tracks if m_idx < len(sch))
+                if current_month_total > max_pmt:
+                    max_pmt = current_month_total
+            
+            total_cost = t_p + t_i + t_k
+            scenario_summaries[name] = {"total": total_cost}
+
+            # תצוגת מטריקות
+            m_col1, m_col2, m_col3 = st.columns(3)
+            m_col1.metric("סכום הלוואה", f"₪{original_principal:,.0f}")
+            m_col2.metric("תקופה מקסימלית", f"{max_months // 12} שנים ({max_months} חודשים)")
+            m_col3.metric("סה-כ החזר כולל", f"₪{total_cost:,.0f}")
+
+            m_col4, m_col5 = st.columns(2)
+            m_col4.metric("החזר חודשי ראשון", f"₪{first_pmt_sum:,.0f}")
+            m_col5.metric("החזר חודשי מקסימלי", f"₪{max_pmt:,.0f}", delta=f"{max_pmt - first_pmt_sum:,.0f}+", delta_color="inverse")
+
+            # הצגת פירוט למסלול אופטימלי
+            if name == "הסל האופטימלי" and not opt_err:
+                st.write("**פירוט מסלולי התמהיל האופטימלי:**")
+                st.table(opt_display_data)
+            if name == "תמהיל מוצע (מהקובץ)" and not opt_err:
+                st.write("**פירוט מסלולי התמהיל המוצע:**")
+                st.table(ori_display_data)
+            st.divider()
+
+        
+
+        # 4. סיכום חיסכון
+        if len(scenario_summaries) > 1:
+            best_name = min(scenario_summaries, key=lambda x: scenario_summaries[x]["total"])
+            worst_name = max(scenario_summaries, key=lambda x: scenario_summaries[x]["total"])
+            
+            money_save = scenario_summaries[worst_name]['total'] - scenario_summaries[best_name]['total']
+            
+            st.balloons()
+            st.success(f"🏆 **התמהיל המשתלם ביותר:** {best_name}")
+            st.metric("פוטנציאל חיסכון כולל", f"{money_save:,.0f} ₪", delta_color="normal")           
+
+with tab7:
+    st.markdown("<h3 style='text-align: center; color: #E67E22;'>מחשבון משכנתא - סלים אחידים</h3>", unsafe_allow_html=True)
+    
+    # כניסת נתונים
+    col_input1, col_input2 = st.columns(2)
+    with col_input1:
+        sim_p = st.select_slider("סכום ההלוואה (₪)", options=list(range(150000, 4000001, 50000)), value=1000000)
+    with col_input2:
+        sim_y = st.select_slider("תקופת ההחזר (שנים)", options=list(range(4, 31)), value=20)
+    
+    sim_m = sim_y * 12
+
+    # --- חישוב מהיר (שולף מהקאש אם אין שינוי) ---
+    all_schedules = get_all_schedules(sim_p, sim_m)
+
+    # בחירת הסל להצגה ויזואלית
+    selected_sal = st.radio("בחר סל להצגה:", list(all_schedules.keys()), horizontal=True)
+    current_tracks = all_schedules[selected_sal]
+
+    # --- מכאן והלאה קוד התצוגה שלך (ללא שינוי לוגי) ---
+    total_pay, total_int, total_idx, first_pmt = 0, 0, 0, 0
+    for track in current_tracks:
+        p, i, k = summarize_schedule(track["sch"])
+        total_pay += (p + i + k)
+        total_int += i
+        total_idx += k
+        first_pmt += track["sch"][0][2]
+    avg_rate = sum(t["rate"] * (t["principal"]/sim_p) for t in current_tracks)
+
+    # --- 5. תצוגת כרטיסיות נתונים ---
+    st.markdown("""
+        <style>
+        .result-box { background-color: #E8F6F3; padding: 12px; border-radius: 10px; margin-bottom: 8px; border-right: 6px solid #27AE60; font-size: 16px; }
+        .label { float: right; font-weight: bold; color: #34495E; }
+        .value { float: left; font-weight: bold; color: #27AE60; }
+        </style>
+    """, unsafe_allow_html=True)
+
+    st.markdown(f"<div class='result-box'><span class='label'>סכום ההלוואה</span><span class='value'>₪{sim_p:,.0f}</span><div style='clear:both;'></div></div>", unsafe_allow_html=True)
+    st.markdown(f"<div class='result-box'><span class='label'>סה\"כ החזר משוער</span><span class='value'>₪{total_pay:,.0f}</span><div style='clear:both;'></div></div>", unsafe_allow_html=True)
+    st.markdown(f"<div class='result-box'><span class='label'>מזה הצמדה למדד</span><span class='value'>₪{total_idx:,.0f}</span><div style='clear:both;'></div></div>", unsafe_allow_html=True)
+    st.markdown(f"<div class='result-box'><span class='label'>החזר חודשי ראשון</span><span class='value'>₪{first_pmt:,.0f}</span><div style='clear:both;'></div></div>", unsafe_allow_html=True)
+
+    # --- 6. פירוט מסלולים ---
+    st.write("### פירוט מסלולים")
+    for t in current_tracks:
+        st.markdown(f"""
+            <div style="background-color: #E67E22; color: white; padding: 15px; border-radius: 10px; margin-bottom: 10px; display: flex; justify-content: space-between; align-items: center;">
+                <div style="font-weight: bold; width: 35%; text-align: right;">{t['name']}</div>
+                <div style="text-align: center; width: 25%;">ריבית: {t['rate']:.2f}%</div>
+                <div style="text-align: left; width: 40%;">סכום: ₪{t['principal']:,.0f}</div>
+            </div>
+        """, unsafe_allow_html=True)
+
+    # --- 7. גרף זרם תשלומים משולש (קרן, ריבית, הצמדה) ---
+    st.write("### התפתחות החזרים לאורך זמן")
+    months_axis = list(range(1, sim_m + 1))
+    
+    # חישוב זרמים מצטברים
+    principal_flow = [sum(t["sch"][m-1][5] for t in current_tracks if m <= len(t["sch"])) for m in months_axis]
+    interest_flow = [sum(t["sch"][m-1][3] for t in current_tracks if m <= len(t["sch"])) for m in months_axis]
+    indexation_flow = [sum(t["sch"][m-1][6] for t in current_tracks if m <= len(t["sch"])) for m in months_axis]
+
+    fig_robin = go.Figure()
+    fig_robin.add_trace(go.Scatter(x=months_axis, y=principal_flow, mode='lines', name='פירעון קרן', line=dict(color="#2CB164", width=3)))
+    fig_robin.add_trace(go.Scatter(x=months_axis, y=interest_flow, mode='lines', name='תשלום ריבית', line=dict(color='#E67E22', width=3)))
+    fig_robin.add_trace(go.Scatter(x=months_axis, y=indexation_flow, mode='lines', name='רכיב הצמדה', line=dict(color='#3498DB', width=3, dash='dot')))
+    
+    fig_robin.update_layout(
+        xaxis_title="חודשים", yaxis_title="₪",
+        hovermode="x unified", paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)',
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="center", x=0.5)
+    )
+    st.plotly_chart(fig_robin, use_container_width=True)

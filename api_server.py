@@ -1,37 +1,110 @@
-from fastapi import FastAPI, UploadFile, File, Form
-from fastapi.middleware.cors import CORSMiddleware
+from fastapi import FastAPI, UploadFile, File, Form, Header, HTTPException
 import json
+import importlib
+import os
+import pprint
+import re
+from pathlib import Path
 from typing import List, Dict, Any, Optional
+from pydantic import BaseModel
 from functions import (
     calculate_schedule, summarize_schedule, optimize_mortgage, 
     create_4_candidate_mortages, convert_api_json_to_loan_tracks,
     convert_api_json_to_first_loan_tracks, InterestRateCalculator,
     _schedule_arrays,_aggregate_monthly_payment,aggregate_yearly,
+    find_best_mortage
 )
 import config as con
 
 
 app = FastAPI(title="Mortgage API Server")
 
-# CORS (local dev)
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=[
-        "http://localhost:8010",
-        "http://127.0.0.1:8010",
-        "http://localhost:3001",
-        "http://127.0.0.1:3001",
-    ],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+CONFIG_SYNC_KEY_ENV = "CALC_API_SYNC_KEY"
+
+
+class ConfigSyncRequest(BaseModel):
+    updates: Dict[str, Any]
+
+
+def _apply_config_updates(config_path: Path, updates: Dict[str, Any]) -> None:
+    try:
+        with open(config_path, "r", encoding="utf-8") as f:
+            content = f.read()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to read config file: {e}")
+
+    for key, value in updates.items():
+        escaped_key = re.escape(str(key))
+        if isinstance(value, (dict, list)):
+            formatted_value = pprint.pformat(value, width=100, sort_dicts=False)
+            prefix_pattern = rf'(^|\n){escaped_key}\s*(?::[^=]+)?=\s*'
+            p_match = re.search(prefix_pattern, content)
+            if p_match:
+                start_idx = p_match.end()
+                while start_idx < len(content) and content[start_idx].isspace():
+                    start_idx += 1
+                if start_idx >= len(content):
+                    continue
+                open_char = content[start_idx]
+                close_char = '}' if open_char == '{' else ']'
+                if open_char not in "{[":
+                    continue
+
+                cnt = 0
+                end_idx = start_idx
+                in_struct = False
+                for i in range(start_idx, len(content)):
+                    ch = content[i]
+                    if ch == open_char:
+                        cnt += 1
+                        in_struct = True
+                    elif ch == close_char:
+                        cnt -= 1
+
+                    if in_struct and cnt == 0:
+                        end_idx = i + 1
+                        break
+
+                if end_idx > start_idx:
+                    content = content[:start_idx] + formatted_value + content[end_idx:]
+        else:
+            if isinstance(value, str):
+                replacement = f'{key} = "{value}"'
+                pattern = rf'{escaped_key}\s*=\s*[\'"][^\'"]*[\'"]'
+            else:
+                replacement = f'{key} = {value}'
+                pattern = rf'{escaped_key}\s*=\s*[-+]?\d*\.?\d+'
+
+            if re.search(pattern, content):
+                content = re.sub(pattern, replacement, content)
+
+    try:
+        with open(config_path, "w", encoding="utf-8") as f:
+            f.write(content)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to write config file: {e}")
+
+
+def _validate_sync_key(provided_key: Optional[str]) -> None:
+    expected_key = os.getenv(CONFIG_SYNC_KEY_ENV, "").strip()
+    if not expected_key:
+        raise HTTPException(status_code=503, detail="Calculator sync key is not configured")
+    if provided_key != expected_key:
+        raise HTTPException(status_code=401, detail="Invalid calculator sync key")
 
 
 
 class MortgageEngine:
     def __init__(self):
         self.calculator = InterestRateCalculator()
+
+    def refresh_runtime_config(self) -> None:
+        # Ensure each request uses the latest values from config.py.
+        importlib.reload(con)
+        self.calculator = InterestRateCalculator(
+            bank_of_israel_rate=float(con.bank_of_israel_rate),
+            prime_margin=float(con.prime_margin),
+        )
     
     def calculate_ltv_details(self, property_value: float, loan_amount: float) -> dict:
         """
@@ -160,22 +233,20 @@ class MortgageEngine:
         """לוגיקה של טאב 2 - אופטימיזציה למשכנתא חדשה"""
         
         capital_allocation = self.calculate_ltv_details(params['property_value'],params['loan_amount'])['allocation']
-
-        durations = [y * 12 for y in range(12, int(params['max_scan_years']) + 1)]
+        print(capital_allocation)
+        #durations = [y * 12 for y in range(12, int(params['max_scan_years']) + 1)]
         sol, totals, err = optimize_mortgage(
-
-            calculate_schedule, summarize_schedule,
-            loan_amount=params['loan_amount'],
-            ltv_input=capital_allocation, 
-            monthly_income_net=params['income'],
-            sensitivity="בינוני",
-            prepay_window_key="לא",
-            durations_months=durations,
-            bank_of_israel_rate=con.bank_of_israel_rate,
-            prime_margin=con.prime_margin,
-            objective_mode="balanced",
-            alpha=0.5,
-            max_monthly_payment=params['max_pmt']
+            params['loan_amount'],
+            capital_allocation, 
+            params['income'],
+            con.sensitivity,
+            con.prepay_window_key,
+            con.durations_months(12*int(params['max_scan_years'])),
+            con.bank_of_israel_rate,
+            con.prime_margin,
+            con.objective_mode,
+            con.alpha,
+            params['max_pmt']
         )
             
         if err: return {"error": err}
@@ -218,6 +289,7 @@ class MortgageEngine:
             summary = scenario_detail["summary"]
             if label == "משכנתא נוכחית":
                 first_month_payment_ori = summary["first_payment"]
+                total_pay_ori = summary["total_repayment"]
 
             comparison_table.append({
                 "תרחיש": label,
@@ -231,12 +303,61 @@ class MortgageEngine:
                 "חיסכון חודשי ממוצע": (detailed_scenarios[labels[0]]["summary"]["total_repayment"] - summary["total_repayment"])/len(scenario_detail["combined_graph"]["months"])
             })
             
+        best_res_data = find_best_mortage(tracks, ltv_bucket)
+        
+        if best_res_data:
+            # חישוב נתונים לגרף חיסכון בשנים (השוואה בין המצב הקיים לתמהיל הנבחר)
+            # 1. שליפת זרם התשלומים של המצב הקיים (שכבר חושב)
+            ori_payments = detailed_scenarios["משכנתא נוכחית"]["combined_graph"]["payments"]
+            
+            # 2. חישוב זרם התשלומים של התמהיל הנבחר
+            best_details = self._process_scenario_details(best_res_data[0])
+            best_payments = best_details["combined_graph"]["payments"]
+            
+            # 3. יישור לאותו אורך (Padding)
+            max_len = max(len(ori_payments), len(best_payments))
+            ori_padded = ori_payments + [0] * (max_len - len(ori_payments))
+            best_padded = best_payments + [0] * (max_len - len(best_payments))
+            
+            years_x = []
+            savings_y = []
 
-        return {
-            "comparison_table": comparison_table, # נתונים לטבלה ההשוואתית
-            "detailed_scenarios": detailed_scenarios, # פירוט מלא לכל תרחיש (גרפים + טבלאות)
-            "ltv_used": ltv_bucket
-        }
+            
+            # 4. ביצוע החישוב השנתי (לא מצטבר)
+            current_year_ori = 0
+            current_year_best = 0
+            
+            for m in range(max_len):
+                current_year_ori += ori_padded[m]
+                current_year_best += best_padded[m]
+                
+                # דגימה בסוף כל שנה 
+                if (m + 1) % 12 == 0:
+                    years_x.append((m + 1) // 12)
+                    savings_y.append(int(current_year_ori - current_year_best))
+                    # איפוס לשנה הבאה
+                    current_year_ori = 0
+                    current_year_best = 0
+            
+            # הוספת נקודה אחרונה אם לא נפלנו בדיוק על שנה עגולה
+            if max_len % 12 != 0:
+                years_x.append(round(max_len / 12, 1))
+                savings_y.append(int(current_year_ori - current_year_best))
+
+            name_converter = {"update_mortage":"משכנתא מעודכנת","non_indx_mortage":"משכנתא לא צמודה","optimal_mortage":"משכנתא מחזור אופטימלי"}
+            return {
+                "comparison_table": comparison_table, # נתונים לטבלה ההשוואתית
+                "detailed_scenarios": detailed_scenarios, # פירוט מלא לכל תרחיש (גרפים + טבלאות)
+                "best_res": {'name': name_converter[best_res_data[4]], "גרף חיסכון בשנים": {"שנים": years_x, "חיסכון": savings_y}},
+                "ltv_used": ltv_bucket
+            }
+        else:
+            return {
+                "comparison_table": comparison_table, # נתונים לטבלה ההשוואתית
+                "detailed_scenarios": detailed_scenarios, # פירוט מלא לכל תרחיש (גרפים + טבלאות)
+                "best_res": {'name': 'there is no saving!!'},
+                "ltv_used": ltv_bucket
+            }
 
     def _process_scenario_details(self, tracks_list: List) -> Dict[str, Any]:
         """
@@ -303,7 +424,7 @@ class MortgageEngine:
         original_principal = 0
         monthly_payment_orig_first = 0
         max_months_orig = 0
-
+        original_table = []
         for tr in first_loan_tracks:
             # לוגיקת בחירת תדירות וריבית פריים כפי שמופיעה ב-Functions
             freq_val = tr.get("freq")
@@ -324,6 +445,13 @@ class MortgageEngine:
             original_principal += tr["principal"]
             monthly_payment_orig_first += sch[0][2]
             max_months_orig = max(max_months_orig, tr["months"])
+            original_table.append({
+                    "סוג_מסלול": tr["rate_type"],
+                    "סכום": tr["principal"],
+                    "תקופה_חודשים": tr["months"],
+                    "ריבית": tr["rate"],
+                    "החזר_חודשי": sch[0][2]
+                })
 
         # 2. הרצת אופטימיזציה להשוואה (הסל האופטימלי)
         ltv_details = self.calculate_ltv_details(property_value, original_principal)
@@ -332,18 +460,17 @@ class MortgageEngine:
         ltv_input_str = ltv_details["allocation"] 
 
         opt_sol, opt_totals, opt_err = optimize_mortgage(
-            calculate_schedule, summarize_schedule,
-            loan_amount=float(original_principal),
-            ltv_input=ltv_input_str, # העברת המחרוזת המתוקנת
-            monthly_income_net=monthly_payment_orig_first * 3.5,
-            sensitivity="בינוני",
-            prepay_window_key="לא",
-            durations_months=[m for m in range(12, 361, 12)],
-            bank_of_israel_rate=con.bank_of_israel_rate,
-            prime_margin=con.prime_margin,
-            objective_mode="balanced",
-            alpha=0.5,
-            max_monthly_payment=monthly_payment_orig_first
+            float(original_principal),
+            ltv_input_str, 
+            monthly_payment_orig_first * con.monthly_income_factor,
+            con.sensitivity,
+            con.prepay_window_key,
+            con.durations_months(max_months_orig),
+            con.bank_of_israel_rate,
+            con.prime_margin,
+            con.objective_mode,
+            con.alpha,
+            monthly_payment_orig_first,
         )
 
         # 3. פונקציית עזר לסיכום נתוני סנריו (המטריקות המופיעות בראש כל בלוק בצילום)
@@ -390,6 +517,7 @@ class MortgageEngine:
         results = {
             "proposed_mix": {
                 "metrics": get_scenario_metrics(original_tracks_data),
+                "table": original_table,
                 "label": "תמהיל מוצע (מהקובץ)"
             },
             "optimal_mix": {
@@ -412,6 +540,162 @@ class MortgageEngine:
 
         return results
     
+    def check_approval_analysis_new_format(self, file_content: bytes, property_value: float) -> Dict[str, Any]:
+        """
+        ניתוח אישור עקרוני (טאב 6).
+        משווה בין תמהיל מהקובץ לתמהיל אופטימלי ומחזיר את כל המידע הוויזואלי.
+        """
+        # 1. עיבוד מסלולים מהקובץ (תמהיל מוצע מהקובץ)
+        try:
+            api_json = json.loads(file_content.decode("utf-8-sig"))
+            first_loan_tracks = convert_api_json_to_first_loan_tracks(api_json)
+        except Exception as e:
+            return {"error": f"Invalid JSON: {str(e)}"}
+
+        original_tracks_data = []
+        original_principal = 0
+        monthly_payment_orig_first = 0
+        max_months_orig = 0
+        total_pay_orig, total_int_orig, total_idx_orig, first_pmt_orig = 0, 0, 0, 0
+        track_details_orig = []
+        results = {}
+        
+        for tr in first_loan_tracks:
+            # לוגיקת בחירת תדירות וריבית פריים כפי שמופיעה ב-Functions
+            freq_val = tr.get("freq")
+            prime_offset = 0
+            if tr["rate_type"] in ("מלצ", "מצ", 'מטח דולר', 'מטח יורו'):
+                freq_val = int(freq_val) if freq_val else 60
+            elif tr["rate_type"] == "פריים":
+                freq_val = 1
+                prime_offset = tr["rate"] - (con.bank_of_israel_rate + con.prime_margin)
+            
+            sch = calculate_schedule(
+                tr["principal"], tr["months"], tr["rate"], 
+                tr["schedule_t"], tr["rate_type"], freq_val, 
+                con.prime_margin, prime_offset
+            )
+            
+            original_tracks_data.append({"info": tr, "schedule": sch})
+            original_principal += tr["principal"]
+            monthly_payment_orig_first += sch[0][2]
+            max_months_orig = max(max_months_orig, tr["months"])
+            
+            p, i, k = summarize_schedule(sch)
+            total_pay_orig += (p + i + k)
+            total_int_orig += i
+            total_idx_orig += k
+            first_pmt_orig += sch[0][2]
+            
+            track_details_orig.append({
+                "שם": tr["rate_type"],
+                "ריבית": tr["rate"],
+               "תקופה_חודשים": tr["months"],
+                "החזר_חודשי": sch[0][2]
+            })
+        
+        months_axis = list(range(1, max_months_orig + 1))
+        principal_flow = [sum(t["schedule"][m-1][5] for t in original_tracks_data if m <= len(t["schedule"])) for m in months_axis]
+        interest_flow = [sum(t["schedule"][m-1][3] for t in original_tracks_data if m <= len(t["schedule"])) for m in months_axis]
+        indexation_flow = [sum(t["schedule"][m-1][6] for t in original_tracks_data if m <= len(t["schedule"])) for m in months_axis]
+
+        results["proposed_mix"] = {
+            "summary": {
+                "סכום_הלוואה": original_principal,
+                "סהכ_החזר_משוער": total_pay_orig,
+                "מזה_הצמדה_למדד": total_idx_orig,
+                "החזר_חודשי_ראשון": first_pmt_orig,
+            },
+            "tracks_detail": track_details_orig,
+            
+            "graph_data": {
+                "months": months_axis,
+                "principal_repayment": principal_flow,
+                "interest_payment": interest_flow,
+                "indexation_component": indexation_flow
+            }
+        }
+
+        # 2. הרצת אופטימיזציה להשוואה (הסל האופטימלי)
+        ltv_details = self.calculate_ltv_details(property_value, original_principal)
+        
+        # תיקון: שליפת הסטרינג מתוך המילון
+        ltv_input_str = ltv_details["allocation"] 
+
+        opt_sol, opt_totals, opt_err = optimize_mortgage(
+            float(original_principal),
+            ltv_input_str, 
+            monthly_payment_orig_first * con.monthly_income_factor,
+            con.sensitivity,
+            con.prepay_window_key,
+            con.durations_months(max_months_orig),
+            con.bank_of_israel_rate,
+            con.prime_margin,
+            con.objective_mode,
+            con.alpha,
+            monthly_payment_orig_first,
+        )
+
+        total_pay_opt, total_int_opt, total_idx_opt, first_pmt_opt = 0, 0, 0, 0
+        track_details_opt = []     
+        max_months_opt = 0 
+        if not opt_err:
+            for tr in opt_sol:
+                track_details_opt.append({
+                "שם": tr["rate_type"],
+                "ריבית": tr["rate"],
+               "תקופה_חודשים": tr["months"],
+                "החזר_חודשי": tr["schedule"][0][2]
+                })
+
+                p, i, k = summarize_schedule(tr["schedule"])
+                total_pay_opt += (p + i + k)
+                total_int_opt += i
+                total_idx_opt += k
+                first_pmt_opt += tr["schedule"][0][2]
+                max_months_opt = max(max_months_opt, tr["months"])
+
+        
+            months_axis = list(range(1, max_months_opt + 1))
+            principal_flow = [sum(t["schedule"][m-1][5] for t in opt_sol if m <= len(t["schedule"])) for m in months_axis]
+            interest_flow = [sum(t["schedule"][m-1][3] for t in opt_sol if m <= len(t["schedule"])) for m in months_axis]
+            indexation_flow = [sum(t["schedule"][m-1][6] for t in opt_sol if m <= len(t["schedule"])) for m in months_axis]
+
+            results["optimal_mix"] = {
+                "summary": {
+                    "סכום_הלוואה": original_principal,
+                    "סהכ_החזר_משוער": total_pay_opt,
+                    "מזה_הצמדה_למדד": total_idx_opt,
+                    "החזר_חודשי_ראשון": first_pmt_opt,
+                },
+                "tracks_detail": track_details_opt,
+                
+                "graph_data": {
+                    "months": months_axis,
+                    "principal_repayment": principal_flow,
+                    "interest_payment": interest_flow,
+                    "indexation_component": indexation_flow
+                }
+            }
+                    
+            savings = results["proposed_mix"]["summary"]["סהכ_החזר_משוער"] - results["optimal_mix"]["summary"]["סהכ_החזר_משוער"]
+            if savings > 0:
+                results["savings"] = {
+                    "total_savings": savings,
+                    "savings_percentage": savings / results["proposed_mix"]["summary"]["סהכ_החזר_משוער"] * 100
+                }
+            else:
+                print("not saving!!!!",savings)
+                results["savings"] = {
+                    "total_savings": 0,
+                    "savings_percentage": 0
+                }
+
+        else:
+            results["optimal_mix"] = None
+            results["savings"] = None
+        return results
+
     def get_uniform_baskets_analysis(self, principal: float, years: int) -> Dict[str, Any]:
         """
         ניתוח סלים אחידים (טאב 7).
@@ -494,23 +778,51 @@ class MortgageEngine:
     
 engine = MortgageEngine()
 
+
+@app.post("/config/sync")
+async def sync_config(
+    payload: ConfigSyncRequest,
+    x_config_sync_key: Optional[str] = Header(default=None, alias="X-Config-Sync-Key"),
+):
+    _validate_sync_key(x_config_sync_key)
+    if not payload.updates:
+        raise HTTPException(status_code=400, detail="No updates provided")
+
+    config_path = Path(__file__).parent.resolve() / "config.py"
+    _apply_config_updates(config_path, payload.updates)
+    engine.refresh_runtime_config()
+    return {
+        "ok": True,
+        "updated_keys": sorted(str(k) for k in payload.updates.keys()),
+    }
+
 @app.post("/simulate") 
 async def simulate(data: List[Dict], property_value: float): # הסרנו את = Form(...)
+    engine.refresh_runtime_config()
     return engine.simulate_manual_tracks(data, property_value)
 
 @app.post("/optimize") # טאב 2
 async def optimize(loan: float = Form(...), property_value: float = Form(...), income: float = Form(...), max_pmt: float = Form(...),max_scan_years: float = Form(...)):
+    """
+    נקודת קצה לביצוע אופטימיזציה למשכנתא חדשה (טאב 2).
+    מקבלת את פרטי ההלוואה והנכס, ומחזירה תמהיל אופטימלי הכולל רשימת מסלולים,
+    לוחות סילוקין, וניתוח החזרים.
+    """
+    engine.refresh_runtime_config()
     params = {"loan_amount": loan, "property_value": property_value, "income": income, "max_pmt": max_pmt, "max_scan_years": max_scan_years, "sensitivity": "בינוני", "mode": "balanced", "alpha": 0.5}
     return engine.run_optimization(params)
 
 @app.post("/refinance") # טאב 3
 async def refinance(json_file: UploadFile = File(...), property_value: float = Form(...)):
+    engine.refresh_runtime_config()
     return engine.analyze_refinance(await json_file.read(),property_value)
 
 @app.post("/approval-check") 
 async def approval(json_file: UploadFile = File(...), property_value: float = Form(...)):
-    return engine.check_approval_analysis(await json_file.read(), property_value)
+    engine.refresh_runtime_config()
+    return engine.check_approval_analysis_new_format(await json_file.read(), property_value)
 
 @app.get("/uniform-baskets") # טאב 7
 async def baskets(principal: float, years: int):
+    engine.refresh_runtime_config()
     return engine.get_uniform_baskets_analysis(principal, years)
