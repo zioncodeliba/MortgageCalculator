@@ -148,7 +148,7 @@ MIN_ACTIVE_SHARE = 0.1      # למשל 5% מההלוואה לכל מסלול "ד
 MAX_SHARE_PER_OPTION = 0.4
 
 TIME_LIMIT = 10 # sec
-no_savings = 60000.0 # no_savings money between ori and anouther mortage
+no_savings = 20000.0 # no_savings money between ori and anouther mortage
 diff_between_opt = 150000.0
 max_diff_of_first_payment = 500
 max_diff_of_max_payment = 500
