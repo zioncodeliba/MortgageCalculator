@@ -21,11 +21,17 @@ from datetime import datetime
 @st.cache_resource(show_spinner=True, ttl=60 * 60 * 12)
 def load_boi_data():
     """
-    טוען את כל הנתונים מבנק ישראל (API + Excel) ושומר במטמון ל-12 שעות.
-    מחזיר נתיב לאקסל ומידע על עקומי תשואה נומינלי, ריאלי ומק"ם.
+    טוען את כל הנתונים מבנק ישראל (API + Excel) ושומר במטמון.
+    במקרה של כשל, טוען את הגיבוי האחרון הקיים בתיקייה.
     """
     base_dir = Path(__file__).parent.resolve()
-    backup_path = base_dir / "last_boi_anchors.json"
+    backup_dir = base_dir / "last_boi_anchors"
+    backup_dir.mkdir(parents=True, exist_ok=True)  # וידוא שהתיקייה קיימת
+    
+    # נתיב לקובץ של היום ספציפית
+    today_str = datetime.now().strftime("%d-%m-%Y")
+    backup_path = backup_dir / f"last_boi_anchors_{today_str}.json"
+    
     try:
         print("🔄 Fetching data from Bank of Israel...")
 
@@ -41,7 +47,6 @@ def load_boi_data():
             "ZC_TSB_ZRD_10Y_MA,ZC_TSB_ZRD_15Y_MA,ZC_TSB_ZRD_20Y_MA"
             "&lastNObservations=1&locale=en"
         )
-        print("📡 Connecting to:", url_yields)
         resp = requests.get(url_yields, timeout=30)
         resp.raise_for_status()
 
@@ -57,12 +62,13 @@ def load_boi_data():
             obs = series.find("Obs", ns)
             if obs is not None:
                 value = obs.attrib.get("OBS_VALUE")
-                if not value:
-                    continue
+                if not value: continue
+                # המרה למפתחות אינטגרליים (שנים)
+                key = int(code.split("_")[3][:2]) # חילוץ מספר השנים
                 if "ZRD" in code:
-                    real_anchor[int(code.split("_")[3][:-1])] = float(value)
+                    real_anchor[key] = float(value)
                 elif "ZND" in code:
-                    nominal_anchor[int(code.split("_")[3][:-1])] = float(value)
+                    nominal_anchor[key] = float(value)
 
         # === נתוני מק"ם ===
         url_makam = (
@@ -70,8 +76,6 @@ def load_boi_data():
             "BOI.STATISTICS/SECDWH/1.0/"
             "DWH_SRC_0351.D.YTM.GB_MK.BS114.NI._Z.M012.S121._Z._Z.W2.B08.C.AVG_W_MV?locale=he"
         )
-        
-        print("📡 Fetching MAKAM data...")
         resp = requests.get(url_makam, timeout=30)
         resp.raise_for_status()
 
@@ -80,91 +84,120 @@ def load_boi_data():
             (pd.to_datetime(obs.attrib.get("TIME_PERIOD")), float(obs.attrib.get("OBS_VALUE")))
             for obs in root.iter("Obs") if obs.attrib.get("OBS_VALUE")
         ]
-        df = pd.DataFrame(data, columns=["תאריך", "ערך"])
-        df = df.sort_values("תאריך")
-        makam_anchor = df["ערך"].iloc[-1]
-        print(" MAKAM Anchor: ", makam_anchor)
+        df = pd.DataFrame(data, columns=["תאריך", "ערך"]).sort_values("תאריך")
+        makam_anchor = float(df["ערך"].iloc[-1])
 
         boi_data = {
-                "nominal_anchor": nominal_anchor,
-                "real_anchor": real_anchor,
-                "makam_anchor": makam_anchor,
-            }
+            "nominal_anchor": nominal_anchor,
+            "real_anchor": real_anchor,
+            "makam_anchor": makam_anchor,
+            "last_updated": today_str
+        }
         
-        
-        
+        # שמירה לגיבוי הצליחה
         with open(backup_path, "w", encoding="utf-8") as f:
-                json.dump(boi_data, f, ensure_ascii=False, indent=4)
-    except:
-        st.warning(f"⚠️ שרת בנק ישראל לא זמין. טוען נתונים שמורים מגרסה קודמת.")
-        if backup_path.exists():
-            with open(backup_path, "r", encoding="utf-8") as f:
-                return json.load(f)
+            json.dump(boi_data, f, ensure_ascii=False, indent=4)
+            
+        return boi_data
 
-    return boi_data
-
-
+    except Exception as e:
+        st.warning(f"⚠️ שרת בנק ישראל לא זמין. מחפש נתונים שמורים...")
+        
+        # חיפוש כל קבצי ה-JSON בתיקייה
+        backup_files = list(backup_dir.glob("last_boi_anchors_*.json"))
+        
+        if backup_files:
+            # מיון לפי זמן שינוי הקובץ (החדש ביותר ראשון)
+            backup_files.sort(key=lambda x: x.stat().st_mtime, reverse=True)
+            latest_backup = backup_files[0]
+            
+            with open(latest_backup, "r", encoding="utf-8") as f:
+                data = json.load(f)
+                st.info(f"✅ נטענו נתונים מתאריך: {data.get('last_updated', 'לא ידוע')}")
+                return data
+        else:
+            st.error("❌ לא נמצא קובץ גיבוי כלשהו במערכת.")
+            return None
+        
 @st.cache_resource(show_spinner=True, ttl=60 * 60 * 12)
-def fetch_latest_boi_excels() -> str:
+def fetch_latest_boi_excels():
     """
-    מאתר ומוריד את קובצי האקסל מעמוד התשואות של בנק ישראל.
+    מאתר ומוריד את קובצי האקסל. אם נכשל, מחזיר את הקבצים האחרונים מהתיקייה המקומית.
     """
-    print("🔍 Searching for Excel files on BOI site...")
-    url = "https://www.boi.org.il/roles/statistics/makamandbonds/yield/#mainContent"
+    base_dir = Path(__file__).parent.resolve()
+    download_dir = base_dir / "boi_yields"
+    download_dir.mkdir(parents=True, exist_ok=True)
 
-    base_dir = os.path.dirname(os.path.abspath(__file__))
-    download_dir = os.path.join(base_dir, "boi_yields")
-    os.makedirs(download_dir, exist_ok=True)
+    try:
+        print("🔍 Searching for Excel files on BOI site...")
+        url = "https://www.boi.org.il/roles/statistics/makamandbonds/yield/#mainContent"
+        
+        response = requests.get(url, timeout=20)
+        response.raise_for_status()
+        soup = BeautifulSoup(response.text, "html.parser")
 
-    response = requests.get(url)
-    response.raise_for_status()
-    soup = BeautifulSoup(response.text, "html.parser")
+        links = soup.find_all("a", href=True)
+        excel_links = {}
 
-    links = soup.find_all("a", href=True)
-    excel_links = {}
+        for a in links:
+            text = a.get_text(" ", strip=True)
+            href = a["href"]
+            if href.endswith((".xls", ".xlsx")):
+                date_match = re.search(r"(\d{2}[./]\d{2}[./]\d{4})", text)
+                date_str = date_match.group(1).replace(".", "-").replace("/", "-") if date_match else "no_date"
+                
+                file_type = href.split('.')[-1]
+                if "התשואה הנומינלית" in text:
+                    excel_links["nominal"] = (href, date_str, file_type)
+                elif "התשואה הריאלית" in text:
+                    excel_links["real"] = (href, date_str, file_type)
+                elif "נתוני התשואות הנומינליות והריאליות" in text:
+                    excel_links["model"] = (href, date_str, file_type)
 
-    for a in links:
-        text = a.get_text(" ", strip=True)
-        href = a["href"]
-        if href.endswith((".xls", ".xlsx")):
-            date_match = re.search(r"(\d{2}[./]\d{2}[./]\d{4})", text)
-            date_str = date_match.group(1).replace(".", "-").replace("/", "-") if date_match else "no_date"
-            #print(text)
-            #print(date_match)
-            file_type = href.split('.')[-1]
-            if "התשואה הנומינלית" in text:
-                print(text,date_str,href)
-                excel_links["nominal"] = (href, date_str, file_type)
-            elif "התשואה הריאלית" in text:
-                print(text,date_str,href)
-                excel_links["real"] = (href, date_str, file_type)
-            elif "נתוני התשואות הנומינליות והריאליות" in text:
-                print(text,date_str,href)
-                excel_links["model"] = (href, date_str, file_type)
+        if not excel_links:
+            raise RuntimeError("לא נמצאו קישורים תקינים באתר.")
 
-    if not excel_links:
-        raise RuntimeError("לא נמצאו קובצי Excel באתר בנק ישראל.")
+        saved_paths = {}
+        for name, (href, date_str, file_type) in excel_links.items():
+            file_url = href if href.startswith("http") else "https://www.boi.org.il" + href
+            if date_str == 'no_date':
+                date_str = "manual_" + datetime.now().strftime("%d-%m-%Y")
+            
+            file_path = download_dir / f"{name}_{date_str}.{file_type}"
+            
+            # הורדה בפועל
+            print(f"⬇️ Downloading {name}...")
+            r = requests.get(file_url, timeout=20)
+            r.raise_for_status()
+            with open(file_path, "wb") as f:
+                f.write(r.content)
+            saved_paths[name] = str(file_path)
 
-    saved_paths = {}
-    for name, (href, date_str, file_type) in excel_links.items():
-        file_url = href if href.startswith("http") else "https://www.boi.org.il" + href
-        if date_str == 'no_date':
-            date_str = "manualiy_date_" + datetime.now().strftime("%d-%m-%Y")
-        file_path = os.path.join(download_dir, f"{name}_{date_str}.{file_type}")
-        #if not os.path.exists(file_path):
-        print(f"⬇️ Downloading {name} ...")
-        r = requests.get(file_url)
-        r.raise_for_status()
-        with open(file_path, "wb") as f:
-            f.write(r.content)
-        saved_paths[name] = file_path
+        return saved_paths["model"], saved_paths["nominal"], saved_paths["real"]
 
-    if "model" not in saved_paths:
-        raise RuntimeError("model file not found among downloaded BOI files.")
+    except Exception as e:
+        st.warning(f"⚠️ שגיאה בהורדת קבצים מבנק ישראל: {e}")
+        st.info("🔄 מנסה לטעון קבצים קיימים מהמאגר המקומי...")
+        
+        fallback_paths = {}
+        for category in ["model", "nominal", "real"]:
+            # מחפש את כל הקבצים שמתחילים בשם הקטגוריה (למשל nominal_*.xlsx)
+            files = list(download_dir.glob(f"{category}_*.*"))
+            if files:
+                # מיון לפי זמן שינוי אחרון - הכי חדש ראשון
+                files.sort(key=lambda x: x.stat().st_mtime, reverse=True)
+                fallback_paths[category] = str(files[0])
+            else:
+                fallback_paths[category] = None
 
-    return saved_paths["model"],saved_paths["nominal"],saved_paths["real"]
+        # בדיקה אם חסר אחד מהקבצים הקריטיים
+        if not all(fallback_paths.values()):
+            missing = [k for k, v in fallback_paths.items() if v is None]
+            st.error(f"❌ לא נמצאו קבצי גיבוי עבור: {', '.join(missing)}")
+            raise RuntimeError("No local backup files available.")
 
-
+        st.success(f"✅ נטענו קבצי גיבוי מקומיים.")
+        return fallback_paths["model"], fallback_paths["nominal"], fallback_paths["real"]
 # ================================================================
 #  קריאת נתונים מאקסל — WorkbookLoader & DataStore
 # ================================================================

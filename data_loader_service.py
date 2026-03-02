@@ -25,6 +25,7 @@ NOMINAL_ANCHOR = ancors["nominal_anchor"]
 REAL_ANCHOR = ancors["real_anchor"]
 MAKAM_ANCOR = ancors["makam_anchor"]
 LAST_UPDATE = time.time()
+
 # ============================================================
 # פונקציית רענון — מעדכנת את כל קבצי הריבית והעוגנים
 # ============================================================
@@ -65,17 +66,23 @@ def refresh_data():
 # תהליך רקע — מרענן כל X שניות (ברירת מחדל: שעה = 3600)
 # ============================================================
 
-def start_background_updater(interval_seconds=3600):
+def start_background_updater(interval_seconds=86400):
     """
-    מפעיל thread שרץ ברקע ומרענן את הנתונים כל interval_seconds.
+    מפעיל thread שרץ ברקע ומרענן את הנתונים פעם ביום.
     """
     def loop():
         while True:
+            # אנחנו מחכים את ה-interval בתחילת הלופ או בסופו
+            # אם רוצים רענון מיידי ואז כל יום:
+            time.sleep(interval_seconds) 
             try:
+                # ניקוי ה-cache של streamlit לפני הרענון כדי להכריח משיכה חדשה
+                dl.fetch_latest_boi_excels.clear()
+                dl.load_boi_data.clear()
+                
                 refresh_data()
             except Exception as e:
                 print(f"❌ Error while refreshing BOI data: {e}")
-            time.sleep(interval_seconds)
 
     t = threading.Thread(target=loop, daemon=True)
     t.start()

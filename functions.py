@@ -16,7 +16,8 @@ import pandas as pd
 import json
 import os 
 from dateutil.relativedelta import relativedelta
-
+import sys
+print(f"🐍 Python Version: {sys.version}")
 # --- Initialize Data Locally (No dependency on data_loader_service) ---
 # This uses the V2 loader which caches the request via st.cache_resource
 XLSX_PATH_MODEL,XLSX_PATH_NOMINAL,XLSX_PATH_REAL = dl.fetch_latest_boi_excels()
@@ -38,20 +39,15 @@ class InterestRateCalculator:
     """
     מחלקה לחישוב ריביות מותאמות לכל מסלול — קבוע, משתנה, פריים ומק"מ.
     """
-    def __init__(self, bank_of_israel_rate: Optional[float] = None, prime_margin: Optional[float] = None,
+    def __init__(self, bank_of_israel_rate: float = con.bank_of_israel_rate, prime_margin: float = con.prime_margin,
                  fixed_non_indexed_table: Optional[Dict[int, float]] = None,
                  fixed_indexed_table: Optional[Dict[int, float]] = None,
-                 spreads: Optional[Dict[str, float]] = None,
+                 spreads: Optional[Dict[str, Dict[str, float]]] = None,
                  ):
         """
         טוען עוגנים *למסלולים משתנים* מהקבצים הכי חדשים בתיקיית boi_yields,
         ומאפשר הזנה ידנית (או Injection בפרמטרים) למסלולים הקבועים ולחוקי הקצאת הון.
         """
-        if bank_of_israel_rate is None:
-            bank_of_israel_rate = con.bank_of_israel_rate
-        if prime_margin is None:
-            prime_margin = con.prime_margin
-
         self.bank_rate = float(bank_of_israel_rate)
         self.prime_rate = float(bank_of_israel_rate + prime_margin)
 
@@ -71,7 +67,8 @@ class InterestRateCalculator:
         # --- מרווחים וחוקי הקצאת הון ---
         self.Spread = dict(con.SPREADS)
         if spreads:
-            self.Spread.update(spreads)
+            for k, v in spreads.items():
+                self.Spread.setdefault(k, {}).update(v)
 
         self.Rules_loan_percentage = dict(con.LOAN_ADJ_RULES)
         self.makam_ancor = MAKAM_ANCOR
@@ -100,6 +97,8 @@ class InterestRateCalculator:
         remain_months: int
     ) -> Optional[float]:
         """חישוב ריבית מתואמת למסלול בהתאם לעוגן, מרווח והקצאת הון."""
+        if track_type == 'grant':
+            return 0 
         loan_adj_global = float(self.Rules_loan_percentage[track_type].get(loan_percentage, 0.0)) 
         
         if "Prime" in track_type:
@@ -1162,7 +1161,8 @@ def generate_candidate_mixtures(
                 #import pdb;pdb.set_trace()
 
             except Exception:
-                import pdb;pdb.set_trace()
+                #
+                # import pdb;pdb.set_trace()
                 continue
 
             key = f"{rate_type_t}_{m_int}_f{freq}"
@@ -1207,6 +1207,8 @@ def generate_candidate_mixtures(
             pmt1_per_unit = pmt1 #/ float(ref_principal)
             original_principal = tr_ori[0]['סכום']
             key = f"ORI_{rate_type_t}_{m_int}_f{freq}"
+            print(key)
+            print(pr, it, idx,max_payment_in_all_mortage,pmt1,original_principal)
             options.append(CandidateOption(
                     key=key,
                     rate_type=rate_type_t,
@@ -1352,7 +1354,7 @@ def _solve_lp(
     # === חלוקת מסלולים ל-ORI ו-NEW ===
     ori_options = [o for o in options if o.key.startswith("ORI_")]
     new_options = [o for o in options if not o.key.startswith("ORI_")]
-
+    print(ori_options)
     # === אילוצי ORI ו-NEW לגבי סכום ===
     for o in options:
         if o in ori_options:
@@ -1431,7 +1433,7 @@ def _solve_lp(
 
     # === משתני אחוזים שלמים ===
     p = {
-        o.key: pl.LpVariable(f"p_{o.key}", lowBound=0, upBound=100, cat="Integer")
+        o.key: pl.LpVariable(f"p_{o.key}", lowBound=0, upBound=100, cat="Continuous")
         for o in options
     }
 
@@ -1696,6 +1698,7 @@ def create_4_candidate_mortages(raw_PDF_tables,capital_allocation):
             print(rec['Payoff_Amount'], rec['total_months_Remained'],rec['Nominal_Interest_Rate_Date_of_Letter'], rec['Loan_Repayment_Method'], rec['current_interest_type'],rec['Interest_Rate_Change_Frequency_in_Months'],prime_offset_temp,months_to_next_reset)
             # סיכום עבור כל מסלול
             P,I,K = summarize_schedule(sch)
+
             routes_data.append([{
                 "מסלול": rate_type,
                 "סכום": rec['Payoff_Amount'],# was Payoff_remind
@@ -1715,6 +1718,7 @@ def create_4_candidate_mortages(raw_PDF_tables,capital_allocation):
             
             first_payment += sch[0][2]
         
+        #print(routes_data)
         ### update mortage ###
         if 1:
             #import pdb;pdb.set_trace()
@@ -1729,12 +1733,17 @@ def create_4_candidate_mortages(raw_PDF_tables,capital_allocation):
             # ולוקחים את המינימום מבניהם לתרחיש "משכנתא מעודכנת".
             
             # שלב א: חישוב ריבית השוק (market_rate_derived)
-            market_adj_rate = clac_rate_int.get_adjusted_rate(
-                con.ANCHOR_TRACK_MAP[rate_type],
-                capital_allocation,
-                rec['Interest_Rate_Change_Frequency_in_Months'],
-                rec['total_months_Remained'], 
-            )
+            try:
+                market_adj_rate = clac_rate_int.get_adjusted_rate(
+                    con.ANCHOR_TRACK_MAP[rate_type],
+                    capital_allocation,
+                    rec['Interest_Rate_Change_Frequency_in_Months'],
+                    rec['total_months_Remained'], 
+                )
+            except:
+                market_adj_rate=0
+                print('cant calc clac_rate_int.get_adjusted_rate, manualy rate = 0')
+                #import pdb; pdb.set_trace()
             
             if rate_type == 'פריים':
                 # עבור פריים: ריבית שוק = פריים בנק ישראל + מרווח רגולטורי/שוק
@@ -1888,7 +1897,7 @@ def create_4_candidate_mortages(raw_PDF_tables,capital_allocation):
         con.prime_margin,
         con.objective_mode,
         con.alpha,
-        first_payment+300, 
+        first_payment, 
         routes_data,
         )
     
@@ -1902,6 +1911,7 @@ def create_4_candidate_mortages(raw_PDF_tables,capital_allocation):
         rate_type = track['rate_type']
         freq = track['freq']
         sch = track['schedule']
+        
         P,I,K = summarize_schedule(sch)
 
         optimal_data.append([
@@ -1977,8 +1987,8 @@ def find_best_mortage(raw_PDF_tables,capital_allocation):
         best_candidate = best_internal
 
     
-    return best_candidate
-
+    return best_candidate,ori_routes_mortage, update_mortage, non_indx_mortage, optimal_mortage
+#
 def weighted_avg_rate_fun(group):
     if not group:
         return None
@@ -2195,7 +2205,8 @@ def convert_api_json_to_loan_tracks(api_json: dict) -> dict:
             try:
                 loan_tracks[track['internal_id']]['Nominal_Interest_Rate_Date_of_Letter'] = addition_to_interest+new_ogen
             except:
-                import pdb;pdb.set_trace()
+                #import pdb;pdb.set_trace()
+                print('erorr in read smart json - canot update the Nominal_Interest_Rate_Date_of_Letter')
             # rate = מלצ או מלצ
              # הריבית היא או מצ או מלצ 
              # אם היה עדכון , נלך לעדכון במועד האחרון או נלך לעדכון בחודש העדכון שהיה? - לשאול את יצחק

@@ -1,14 +1,14 @@
 from __future__ import annotations
 
 # streamlit run  /Users/user/Desktop/BI/final_10/mortgage_app.py
-
+# user@RachelBonen ~ % /usr/local/bin/python3 -m streamlit run /Users/user/Desktop/BI/final11/mortgage_app.py
 # ------------------------------ CONSTANTS & IMPORTS ------------------------------
 import io
 import re
 import sys
 import importlib
 import os
-print(f"🐍 Python Version: {sys.version}")
+#print(f"🐍 Python Version: {sys.version}")
 
 import pandas as pd
 import plotly.graph_objects as go
@@ -19,21 +19,65 @@ from typing import List
 import config as con
 import mortgage_data_loader as dl
 import json
-import requests
 from functions import InterestRateCalculator,calculate_schedule,summarize_schedule,aggregate_yearly
 from functions import convert_api_json_to_loan_tracks, optimize_mortgage,monthly_to_yearly, find_best_mortage
 from functions import _schedule_arrays,_pad,_aggregate_monthly_payment, build_anchor,create_4_candidate_mortages,convert_api_json_to_first_loan_tracks
 import pprint
+import data_loader_service as dls
+from datetime import datetime
 
-@st.cache_data(ttl=86400)
-def get_cached_data():
-    path_model,path_nominal,path_real = dl.fetch_latest_boi_excels()
-    store = dl.load_workbook_data(path_model, con.HORIZON, con.SCENARIO)
-    print(f'Data loaded from: {path_model}')
-    return path_model, store
 
-XLSX_PATH, DATASTORE = get_cached_data()
+#@st.cache_data(ttl=86400)
+#def get_cached_data():
+#    path_model,path_nominal,path_real = dl.fetch_latest_boi_excels()
+#    store = dl.load_workbook_data(path_model, con.HORIZON, con.SCENARIO)
+#    print(f'Data loaded from: {path_model}')
+#    return path_model, store
 
+#XLSX_PATH, DATASTORE = get_cached_data()
+if 'updater_started' not in st.session_state:
+    dls.start_background_updater(interval_seconds=86400)
+    st.session_state['updater_started'] = True
+
+# פונקציית עזר להצגת הסטטוס ב-Sidebar
+def render_data_status_sidebar():
+    st.sidebar.markdown("---")
+    st.sidebar.subheader("📊 סטטוס נתוני בנק ישראל")
+    
+    if dls.LAST_UPDATE:
+        # הצגת זמן עדכון כללי
+        last_dt = datetime.fromtimestamp(dls.LAST_UPDATE)
+        st.sidebar.success(f"עדכון אחרון: {last_dt.strftime('%d/%m/%Y %H:%M')}")
+        
+        # בניית אובייקט נתונים לתצוגה מתוך המשתנים ב-Service
+        anchors_display = {
+            "nominal_anchor": dls.NOMINAL_ANCHOR,
+            "real_anchor": dls.REAL_ANCHOR,
+            "makam_anchor": dls.MAKAM_ANCOR
+        }
+        
+        # הצגת הנתונים בפורמט נקי ב-expander
+        with st.sidebar.expander("📄 נתוני עוגנים גולמיים", expanded=True):
+            st.json(anchors_display)
+
+        # כפתור רענון ידני
+        if st.sidebar.button("🔄 רענן נתונים"):
+            with st.spinner("מתחבר..."):
+                try:
+                    dl.fetch_latest_boi_excels.clear()
+                    dl.load_boi_data.clear()
+                    dls.refresh_data()
+                    st.rerun()
+                except Exception as e:
+                    st.sidebar.error(f"שגיאה: {e}")
+    else:
+        st.sidebar.warning("טרם נטענו נתונים")
+XLSX_PATH = dls.XLSX_PATH_MODEL
+DATASTORE = dls.DATASTORE
+
+if DATASTORE is None:
+    st.error("שגיאה בטעינת נתוני בנק ישראל. אנא בדוק את החיבור לאינטרנט או את קבצי הגיבוי.")
+    st.stop()
 
 # from data_loader_service import DATASTORE #, NOMINAL_ANCHOR, REAL_ANCHOR, MAKAM_ANCOR
 @st.cache_data
@@ -130,47 +174,15 @@ def save_config_to_file(updates: dict):
     except Exception as e:
         st.error(f"Failed to write config file: {e}")
 
-
-def sync_config_to_api(updates: dict):
-    sync_url = os.getenv("CALC_API_SYNC_URL", "").strip()
-    if not sync_url:
-        return False, "CALC_API_SYNC_URL is not configured"
-
-    headers = {"Content-Type": "application/json"}
-    sync_key = os.getenv("CALC_API_SYNC_KEY", "").strip()
-    if sync_key:
-        headers["X-Config-Sync-Key"] = sync_key
-
-    try:
-        response = requests.post(
-            sync_url,
-            json={"updates": updates},
-            headers=headers,
-            timeout=20,
-        )
-    except requests.RequestException as e:
-        return False, str(e)
-
-    if not response.ok:
-        try:
-            error_payload = response.json()
-            detail = error_payload.get("detail")
-            if detail:
-                return False, str(detail)
-        except Exception:
-            pass
-        return False, f"HTTP {response.status_code}"
-
-    return True, None
-
 # ------------------------------ STREAMLIT UI (MIX) ------------------------------
 st.set_page_config(page_title="מחשבון משכנתא", layout="wide")
 st.title("מחשבון משכנתא")
 
+render_data_status_sidebar()
 
 clac_rate_int = InterestRateCalculator()
 inflation_and_XLSX_PATH = XLSX_PATH
-st.info(f"{inflation_and_XLSX_PATH} :נתוני אינפלציה וריבית נטענים מהקובץ הבא") #  
+#st.info(f"{inflation_and_XLSX_PATH} :נתוני אינפלציה וריבית נטענים מהקובץ הבא") #  
 tab1, tab2,tab3,tab4,tab5,tab6,tab7 = st.tabs(["📊 סימולטור מסלולים", "⚖️  תמהיל אופטימלי למשכנתא חדשה","תמהיל אופטימלי למחזור פנימי","מידע כללי", "הגדרות",'אישור עקרוני',"סימולטור לקוח"])
 
 with tab1:
@@ -205,7 +217,7 @@ with tab1:
     # --- Tracks editor ---
     st.subheader("סימולטור מסלולים")
     add_col, _, _ = st.columns([1, 2, 2])
-    if add_col.button("➕ הוסף מסלול", use_container_width=True):
+    if add_col.button("➕ הוסף מסלול", width='stretch'):
         st.session_state.track_uid_counter += 1
         uid = f"t{st.session_state.track_uid_counter}"
         # Try to calc initial rate based on defaults
@@ -680,7 +692,7 @@ with tab2:
     bank_rate_input = con.bank_of_israel_rate 
     prime_margin_input = con.prime_margin
 
-    if st.button("🔎 מצא תמהיל אופטימלי", use_container_width=True):
+    if st.button("🔎 מצא תמהיל אופטימלי", width='stretch'):
         with st.spinner("מריץ אופטימיזציה..."): 
             sol_tracks, totals, err = optimize_mortgage(
                 float(loan_amount),
@@ -841,7 +853,22 @@ with tab3:
 
     # --- 1. הגדרת פונקציות עזר (חייבות להופיע בראש הטאב) ---
     def plot_table_and_graf(data):
+            # יצירת ה-DataFrame הבסיסי מהנתונים
             df_routes_var = pd.DataFrame([val[0] for val in data])
+            
+            # חישוב סך כל הסכומים בתמהיל לצורך חישוב אחוזים
+            total_sum_in_mix = df_routes_var['סכום'].sum()
+            
+            # הוספת עמודת אחוז מהתמהיל
+            if total_sum_in_mix > 0:
+                df_routes_var['אחוז מהתמהיל'] = (df_routes_var['סכום'] / total_sum_in_mix) * 100
+            else:
+                df_routes_var['אחוז מהתמהיל'] = 0
+
+            # סדר עמודות חדש כדי שהאחוז יופיע ליד הסכום
+            cols_order = ["מסלול", "סכום", "אחוז מהתמהיל", "תקופה (חודשים)", "ריבית", "החזר ראשון"]
+            df_routes_var = df_routes_var[cols_order]
+
             st.data_editor(
                 df_routes_var,
                 hide_index=True,
@@ -852,12 +879,12 @@ with tab3:
                         "מסלול", options=df_routes_var['מסלול'].unique().tolist()
                     ),
                     "סכום": st.column_config.NumberColumn("סכום", step=1000, format="₪%d"),
+                    "אחוז מהתמהיל": st.column_config.NumberColumn("אחוז מהתמהיל", format="%.1f%%"),
                     "תקופה (חודשים)": st.column_config.NumberColumn("תקופה (חודשים)", step=1),
                     "ריבית": st.column_config.NumberColumn("ריבית (%)", format="%.2f"),
                     "החזר ראשון": st.column_config.NumberColumn("החזר ראשון", step=1),
                 }
             )
-
             # חישובים מצטברים
             current_mortage = []
             max_len = 0
@@ -995,9 +1022,10 @@ with tab3:
             print("api_json")
             tracks = convert_api_json_to_loan_tracks(api_json)
             print("tracks")
-            ori_m, upd_m, non_m, opt_m = create_4_candidate_mortages(tracks, capital_allocation)
-            print("ori_m, upd_m, non_m, opt_m ")
-            best_res = find_best_mortage(tracks, capital_allocation)
+            #ori_m, upd_m, non_m, opt_m = create_4_candidate_mortages(tracks, capital_allocation)
+            #print("ori_m, upd_m, non_m, opt_m ")
+            best_res,ori_m, upd_m, non_m, opt_m= find_best_mortage(tracks, capital_allocation)
+            #best_res = find_best_mortage(tracks, capital_allocation)
 
         
         options_map = {
@@ -1052,7 +1080,7 @@ with tab3:
                 all_yearly_savings[opt] = [orig - sug for orig, sug in zip(temp_ori, temp_opt)]
             
             st.write("### 📉 השוואת החזרים חודשיים")
-            st.plotly_chart(fig_comp, use_container_width=True)
+            st.plotly_chart(fig_comp, width='stretch')
 
             # --- 5. הטבלה המבוקשת ---
             st.subheader("טבלה השוואתית")
@@ -1060,7 +1088,7 @@ with tab3:
                 "החזר חודשי ראשון": "₪{:,.0f}", "החזר חודשי מקסימלי": "₪{:,.0f}",
                 "סך הכל תשלומים": "₪{:,.0f}", "חיסכון ₪": "₪{:,.0f}",
                 "חיסכון %": "{:.1f}%", "החזר לשקל": "{:.2f}"
-            }), use_container_width=True)
+            }), width='stretch')
 
             # --- 6. גרף חיסכון שנתי להשוואה (התוספת החדשה) ---
             st.divider()
@@ -1087,7 +1115,7 @@ with tab3:
                 legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="center", x=0.5)
             )
             
-            st.plotly_chart(fig_savings, use_container_width=True)
+            st.plotly_chart(fig_savings, width='stretch')
             
             # בונוס: טבלת חיסכון מצטבר
             with st.expander("לצפייה בחיסכון המצטבר לפי שנים"):
@@ -1101,7 +1129,7 @@ with tab3:
                         cum_list.append(current_sum)
                     cum_data[label] = cum_list
                 
-                st.dataframe(pd.DataFrame(cum_data).style.format("₪{:,.0f}"), use_container_width=True)
+                st.dataframe(pd.DataFrame(cum_data).style.format("₪{:,.0f}"), width='stretch')
 
         # --- 6. פירוט מלא (Expander) ---
         st.divider()
@@ -1358,7 +1386,6 @@ with tab5:
                 "diff_between_opt":new_diff_between_opt
             }
             save_config_to_file(updates)
-            sync_ok, sync_error = sync_config_to_api(updates)
             
             # Explicitly reload the config module to ensure new values are picked up
             # Robust reload logic:
@@ -1372,10 +1399,7 @@ with tab5:
                 # However, to be safe and satisfy "Must reload":
               #  pass
 
-            if sync_ok:
-                st.success("ההגדרות נשמרו בהצלחה וסונכרנו ל-API! מבצע רענון...")
-            else:
-                st.warning(f"ההגדרות נשמרו מקומית, אך סנכרון API נכשל: {sync_error}")
+            st.success("ההגדרות נשמרו בהצלחה! מבצע רענון...")
             import time
             time.sleep(1)
             st.rerun()
@@ -1589,4 +1613,5 @@ with tab7:
         hovermode="x unified", paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)',
         legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="center", x=0.5)
     )
-    st.plotly_chart(fig_robin, use_container_width=True)
+    st.plotly_chart(fig_robin, width='stretch')
+
