@@ -3,14 +3,17 @@ from typing import Dict
 
 
 
+# קלדרי 4.373
+# מדדי 4.322
 
-
-
+# 4.352
+zacaot = 3.0
+Sdarot = False
 SHEET_NOMINAL = "תשואה נומינלית הנגזרת מהמודל"
 SHEET_REAL    = "תשואה ריאלית הנגזרת מהמודל"
 SHEET_GAP     = "התפתחות פער התשואות"
-SCENARIO_COL  = "Unnamed: 2"            # העמודה שמכילה מזהה תרחיש ('מדדי'/'קלנדרי')
-SCENARIO = None                 # מדדי או קלנדרי
+SCENARIO_COL  = "Unnamed: 2" #"סוג ממוצע2"#           # העמודה שמכילה מזהה תרחיש ('מדדי'/'קלנדרי')
+SCENARIO = None #"מדדי" #"קלנדרי"#"מדדי" #None                 # מדדי או קלנדרי
 HORIZON       = 360                      # חודשים
 
 
@@ -33,6 +36,7 @@ ANCHOR_TRACK_MAP = {
     'מטח יורו': 'matah dolar',
     'מטח דולר': 'matah euro',
     "מענק": 'grant',
+    "זכאות": "zacaot",
 }
 
 bank_of_israel_rate = 4.0

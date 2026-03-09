@@ -3,7 +3,7 @@ import json
 from typing import List, Dict, Any, Optional
 from functions import (
     calculate_schedule, summarize_schedule, optimize_mortgage, 
-    create_4_candidate_mortages, convert_api_json_to_loan_tracks,
+    convert_api_json_to_loan_tracks,
     convert_api_json_to_first_loan_tracks, InterestRateCalculator,
     _schedule_arrays,_aggregate_monthly_payment,aggregate_yearly,
     find_best_mortage
@@ -12,8 +12,6 @@ import config as con
 
 
 app = FastAPI(title="Mortgage API Server")
-
-
 
 class MortgageEngine:
     def __init__(self):
@@ -155,8 +153,6 @@ class MortgageEngine:
             con.sensitivity,
             con.prepay_window_key,
             con.durations_months(12*int(params['max_scan_years'])),
-            con.bank_of_israel_rate,
-            con.prime_margin,
             con.objective_mode,
             con.alpha,
             params['max_pmt']
@@ -177,17 +173,19 @@ class MortgageEngine:
         
         api_json = json.loads(file_content.decode("utf-8-sig"))
         tracks = convert_api_json_to_loan_tracks(api_json)
-        loan_amount = sum([tracks[i]['Payoff_Amount'] for i in tracks.keys()])
+        #loan_amount = sum([tracks[i]['Payoff_Amount'] for i in tracks.keys()])
+        
+        loan_amount = sum([tracks[i]['loan_value'] + tracks[i]['loan_value_inflation'] + tracks[i]['loan_value_interest'] + tracks[i]['fee_differences']  for i in tracks.keys()])
         ltv_bucket = self.calculate_ltv_details(property_value,loan_amount)['allocation']
         
         # 2. יצירת 4 תרחישי המחזור (מקור, מעודכנת, לא צמודה, אופטימלית)
         #scenarios_raw = create_4_candidate_mortages(tracks, ltv_bucket)
         labels = ["Current_Mortgage", "Updated_Mortgage", "Non-linked_Mortgage", "Optimal_Refinance_Mortgage"]
-        best_res_data,ori_routes_mortage, update_mortage, non_indx_mortage, optimal_mortage = find_best_mortage(tracks, ltv_bucket)
+        best_res_data,ori_routes_mortage,ori_routes_mortage2, update_mortage, non_indx_mortage, optimal_mortage = find_best_mortage(tracks, ltv_bucket)
         scenarios_raw = [ori_routes_mortage, update_mortage, non_indx_mortage, optimal_mortage]
         comparison_table = []
         detailed_scenarios = {}
-        total_loan_amount = sum(t['Payoff_Amount'] for t in tracks.values())
+        total_loan_amount = loan_amount#sum(t['Payoff_Amount'] for t in tracks.values())
 
         # 3. ניתוח מעמיק של כל תרחיש ליצירת טבלאות וגרפים
         
@@ -417,8 +415,6 @@ class MortgageEngine:
             con.sensitivity,
             con.prepay_window_key,
             con.durations_months(max_months_orig),
-            con.bank_of_israel_rate,
-            con.prime_margin,
             con.objective_mode,
             con.alpha,
             monthly_payment_orig_first,

@@ -1,14 +1,12 @@
 from __future__ import annotations
 
-# streamlit run  /Users/user/Desktop/BI/final_10/mortgage_app.py
-# user@RachelBonen ~ % /usr/local/bin/python3 -m streamlit run /Users/user/Desktop/BI/final11/mortgage_app.py
+
+# /usr/local/bin/python3 -m streamlit run /Users/user/Desktop/BI/final_12/mortgage_app.py
 # ------------------------------ CONSTANTS & IMPORTS ------------------------------
 import io
 import re
-import sys
+
 import importlib
-import os
-#print(f"🐍 Python Version: {sys.version}")
 
 import pandas as pd
 import plotly.graph_objects as go
@@ -17,69 +15,20 @@ import streamlit as st
 from pathlib import Path
 from typing import List
 import config as con
-import mortgage_data_loader as dl
+
 import json
 from functions import InterestRateCalculator,calculate_schedule,summarize_schedule,aggregate_yearly
 from functions import convert_api_json_to_loan_tracks, optimize_mortgage,monthly_to_yearly, find_best_mortage
-from functions import _schedule_arrays,_pad,_aggregate_monthly_payment, build_anchor,create_4_candidate_mortages,convert_api_json_to_first_loan_tracks
+from functions import _schedule_arrays,_pad,_aggregate_monthly_payment, build_anchor,convert_api_json_to_first_loan_tracks
+
 import pprint
-import data_loader_service as dls
-from datetime import datetime
 
 
-#@st.cache_data(ttl=86400)
-#def get_cached_data():
-#    path_model,path_nominal,path_real = dl.fetch_latest_boi_excels()
-#    store = dl.load_workbook_data(path_model, con.HORIZON, con.SCENARIO)
-#    print(f'Data loaded from: {path_model}')
-#    return path_model, store
+import functions
 
-#XLSX_PATH, DATASTORE = get_cached_data()
-if 'updater_started' not in st.session_state:
-    dls.start_background_updater(interval_seconds=86400)
-    st.session_state['updater_started'] = True
+DATASTORE = functions.DATASTORE
 
-# פונקציית עזר להצגת הסטטוס ב-Sidebar
-def render_data_status_sidebar():
-    st.sidebar.markdown("---")
-    st.sidebar.subheader("📊 סטטוס נתוני בנק ישראל")
-    
-    if dls.LAST_UPDATE:
-        # הצגת זמן עדכון כללי
-        last_dt = datetime.fromtimestamp(dls.LAST_UPDATE)
-        st.sidebar.success(f"עדכון אחרון: {last_dt.strftime('%d/%m/%Y %H:%M')}")
-        
-        # בניית אובייקט נתונים לתצוגה מתוך המשתנים ב-Service
-        anchors_display = {
-            "nominal_anchor": dls.NOMINAL_ANCHOR,
-            "real_anchor": dls.REAL_ANCHOR,
-            "makam_anchor": dls.MAKAM_ANCOR
-        }
-        
-        # הצגת הנתונים בפורמט נקי ב-expander
-        with st.sidebar.expander("📄 נתוני עוגנים גולמיים", expanded=True):
-            st.json(anchors_display)
 
-        # כפתור רענון ידני
-        if st.sidebar.button("🔄 רענן נתונים"):
-            with st.spinner("מתחבר..."):
-                try:
-                    dl.fetch_latest_boi_excels.clear()
-                    dl.load_boi_data.clear()
-                    dls.refresh_data()
-                    st.rerun()
-                except Exception as e:
-                    st.sidebar.error(f"שגיאה: {e}")
-    else:
-        st.sidebar.warning("טרם נטענו נתונים")
-XLSX_PATH = dls.XLSX_PATH_MODEL
-DATASTORE = dls.DATASTORE
-
-if DATASTORE is None:
-    st.error("שגיאה בטעינת נתוני בנק ישראל. אנא בדוק את החיבור לאינטרנט או את קבצי הגיבוי.")
-    st.stop()
-
-# from data_loader_service import DATASTORE #, NOMINAL_ANCHOR, REAL_ANCHOR, MAKAM_ANCOR
 @st.cache_data
 def get_all_schedules(sim_p, sim_m):
     # פונקציית עזר פנימית לחישוב מסלול בודד
@@ -178,10 +127,9 @@ def save_config_to_file(updates: dict):
 st.set_page_config(page_title="מחשבון משכנתא", layout="wide")
 st.title("מחשבון משכנתא")
 
-render_data_status_sidebar()
 
 clac_rate_int = InterestRateCalculator()
-inflation_and_XLSX_PATH = XLSX_PATH
+#inflation_and_XLSX_PATH = XLSX_PATH
 #st.info(f"{inflation_and_XLSX_PATH} :נתוני אינפלציה וריבית נטענים מהקובץ הבא") #  
 tab1, tab2,tab3,tab4,tab5,tab6,tab7 = st.tabs(["📊 סימולטור מסלולים", "⚖️  תמהיל אופטימלי למשכנתא חדשה","תמהיל אופטימלי למחזור פנימי","מידע כללי", "הגדרות",'אישור עקרוני',"סימולטור לקוח"])
 
@@ -225,56 +173,57 @@ with tab1:
         init_type = "קלצ"
         init_ltv = st.session_state.get("capital_allocation", con.defult_capital_allocation)
         try:
-            init_rate = clac_rate_int.get_adjusted_rate(
+            init_rate_dic = clac_rate_int.get_adjusted_rate(
                 con.ANCHOR_TRACK_MAP[init_type],
                 init_ltv,
-                60, # default freq
+                60, 
                 init_months
             )
+            init_ogen,init_tosefet,init_sum_rate = init_rate_dic['ogen'],init_rate_dic['tosefet'],init_rate_dic['sum_rate']
         except:
-            init_rate = 4.0
+            init_ogen,init_tosefet,init_sum_rate = 0,0,0
 
         tracks.append({
             "uid": uid,
             "principal": 500_000,
             "months": init_months,
-            "rate": float(init_rate),
-            "ancor": 0,
-            "spr":0,
-            "loan_adj_global":0,
+            "ogen": float(init_ogen),
+            "tosefet": float(init_tosefet),
+            "sum_rate": float(init_sum_rate),
             "rate_type": init_type,
             "freq": 60,
             "schedule_t": "שפיצר (החזר חודשי קבוע)",
         })
-
+    
+    def update_total_rate_manual(uid):
+        ogen = st.session_state.get(f"ogen_{uid}", 0.0)
+        tosefet = st.session_state.get(f"tosefet_{uid}", 0.0)
+        st.session_state[f"sum_rate_{uid}"] = ogen + tosefet
+    
     # --- Callbacks for Rate Updates ---
     def update_rate_cb(uid_target):
-        # Retrieve current inputs from session state
         r_type = st.session_state.get(f"rate_type_{uid_target}")
         months = st.session_state.get(f"months_{uid_target}")
-        freq = st.session_state.get(f"freq_{uid_target}") # Might be None for some types
+        freq = st.session_state.get(f"freq_{uid_target}")
         ltv = st.session_state.get("capital_allocation", con.defult_capital_allocation)
         
-        # Safe defaults
         if not r_type: r_type = "קלצ"
         if not months: months = 240
-        
-        # Handle freq default if missing but needed
-        # (Logic similar to main loop default)
         if r_type in ("מלצ", "מצ") and not freq: freq = 60
         
-        try:
-            new_r = clac_rate_int.get_adjusted_rate(
-                con.ANCHOR_TRACK_MAP.get(r_type, "fixed_const_no_index"),
-                ltv,
-                freq,
-                months
-            )
-            # Update the rate widget state
-            st.session_state[f"rate_{uid_target}"] = float(new_r)
-        except Exception as e:
-            # print(f"Error in callback: {e}")
-            pass
+        # שליפת הריביות המעודכנות מהמנוע שלך
+        init_rate_dic = clac_rate_int.get_adjusted_rate(
+            con.ANCHOR_TRACK_MAP.get(r_type, "fixed_const_no_index"),
+            ltv,
+            freq,
+            months
+        )
+        
+        # עדכון שלושת המפתחות ב-Session State
+        st.session_state[f"ogen_{uid_target}"] = float(init_rate_dic['ogen'])
+        st.session_state[f"tosefet_{uid_target}"] = float(init_rate_dic['tosefet'])
+        st.session_state[f"sum_rate_{uid_target}"] = float(init_rate_dic['sum_rate'])
+        
 
     def update_all_rates_cb():
         # Iterate all existing tracks in session and update them
@@ -294,11 +243,10 @@ with tab1:
         key="capital_allocation",
         on_change=update_all_rates_cb
     )
-    #clac_rate_int = InterestRateCalculator()
     remove_index = None
     for i, tr in enumerate(tracks):
         with st.expander(f"מסלול #{i+1}", expanded=True):
-            c1, c2, c3, c4, c5, c6, c7,c8 = st.columns(8)
+            c1, c2, c3a, c3b, c3c, c4, c5, c6, c7,c8 = st.columns(10)
             principal = c1.number_input("קרן (₪)", min_value=0, value=int(tr["principal"]), step=50_000, key=f"principal_{tr['uid']}")
             months    = c2.number_input("תקופה (חודשים)", min_value=1, value=int(tr["months"]), step=12, key=f"months_{tr['uid']}", on_change=update_rate_cb, args=(tr["uid"],))
             rate_type = c4.selectbox("סוג ריבית", ["קלצ", "קצ","מלצ","מצ", "פריים","מטח דולר","מטח יורו","מקמ","זכאות","מענק"], index=["קלצ","קצ","מלצ","מצ","פריים","מטח דולר","מטח יורו","מקמ","זכאות","מענק"].index(tr["rate_type"]), key=f"rate_type_{tr['uid']}", on_change=update_rate_cb, args=(tr["uid"],))
@@ -323,26 +271,36 @@ with tab1:
                     freq = None
 
             try:  
-                
-                default_rate = clac_rate_int.get_adjusted_rate(
+                init_rate_dic = clac_rate_int.get_adjusted_rate(
                     con.ANCHOR_TRACK_MAP[rate_type],
                     capital_allocation,
                     freq,
                     months, 
                 )
-                #print(f"default_rate: {default_rate}")
+                init_ogen,init_tosefet,init_sum_rate = init_rate_dic['ogen'],init_rate_dic['tosefet'],init_rate_dic['sum_rate']
 
             except:
-                # print('Fail to calc default_rate, use default_rate = 0')
-                default_rate = 0
-                #import pdb;pdb.set_trace()
+                init_ogen,init_tosefet,init_sum_rate = 0,0,0
 
-            with c3:
-                rate  = c3.number_input("ריבית שנתית (%)", min_value=0.0, value=float(default_rate), step=0.0001,format="%.12f", key=f"rate_{tr['uid']}")
+            is_fixed = rate_type in ["קלצ", "קצ", "זכאות", "מענק",'מקמ']
 
-
-            
-
+            with c3a:
+                ogen_rate = c3a.number_input("עוגן (%)", value=float(init_ogen), 
+                                            step=0.01, format="%.2f", 
+                                            key=f"ogen_{tr['uid']}",
+                                            disabled=is_fixed,
+                                            on_change=update_total_rate_manual, args=(tr['uid'],)) # מנטרל בקבועה
+            with c3b:
+                tosefet_rate = c3b.number_input("תוספת (%)", value=float(init_tosefet), 
+                                                step=0.01, format="%.2f", 
+                                                key=f"tosefet_{tr['uid']}",
+                                                disabled=is_fixed,
+                                                on_change=update_total_rate_manual, args=(tr['uid'],)) # מנטרל בקבועה
+            with c3c:
+                sum_rate_rate = c3c.number_input("ריבית (%)", value= init_sum_rate,
+                                                step=0.0001, format="%.4f", 
+                                                key=f"sum_rate_{tr['uid']}")
+                
             schedule_t = c6.selectbox("לוח סילוקין",
                                     ["שפיצר (החזר חודשי קבוע)",
                                     "קרן שווה (החזר חודשי יורד)",
@@ -365,11 +323,17 @@ with tab1:
                 mix_pct = (float(principal) / total_principal_all * 100.0) if total_principal_all > 0 else 0.0
                 st.metric("אחוז בתמהיל", f"{mix_pct:.1f}%", f"key=pct_{tr['uid']}")
 
+            if (rate_type == 'קלצ') or (rate_type == 'קצ') or (rate_type == 'זכאות'):
+                pass
+            else:
+                sum_rate_rate = ogen_rate+tosefet_rate
             # update state
             tr.update({
                 "principal": principal,
                 "months": months,
-                "rate": rate,
+                "ogen": float(ogen_rate),
+                "tosefet": float(tosefet_rate),
+                "sum_rate": float(sum_rate_rate),
                 "rate_type": rate_type,
                 "freq": freq,
                 "schedule_t": schedule_t,
@@ -384,7 +348,6 @@ with tab1:
 
     # --- Compute button ---
     compute = st.button("חשב תמהיל", type="primary")
-
 
     if compute and len(tracks) > 0:
         # --- per-track schedules ---
@@ -407,14 +370,17 @@ with tab1:
                     freq_val = 1
                     # Offset = (Input Rate) - (Base Rate)
                     # Base Rate = BOI + Margin
-                    current_base = con.bank_of_israel_rate + con.prime_margin
-                    prime_offset = tr["rate"] - current_base
+                    #current_base = con.bank_of_israel_rate + con.prime_margin
+                    #prime_offset = tr["tosefet"] 
 
                 else:
                     freq_val = None
-                #print('tr["rate"]',tr["rate"])
-                print('simulator in',tr["principal"], tr["months"], tr["rate"], tr["schedule_t"], tr["rate_type"], freq_val, con.prime_margin, prime_offset)
-                sch = calculate_schedule(tr["principal"], tr["months"], tr["rate"], tr["schedule_t"], tr["rate_type"], freq_val,prime_margin= con.prime_margin,prime_offset= prime_offset)
+                
+
+                sch = calculate_schedule(tr["principal"], tr["months"], tr["sum_rate"], tr["schedule_t"], tr["rate_type"],
+                                          freq_val,months_to_next_reset= freq_val,prime_margin= con.prime_margin,prime_offset= tr["tosefet"],
+                                          real_margin= tr["tosefet"])
+                
                 results.append((tr["uid"], sch))
                 max_len = max(max_len, len(sch))
             except Exception as e:
@@ -657,6 +623,7 @@ with tab1:
             key="dl_total_xlsx"
         )
 
+
 with tab2:
     st.subheader("תמהיל אופטימלי ללקיחת משכנתא חדשה")
     mix = st.session_state.get("mix_tracks", [])
@@ -701,8 +668,6 @@ with tab2:
                 str(sensitivity),
                 str(prepay_window_key),
                 con.durations_months(max_scan_years*12),
-                float(bank_rate_input),
-                float(prime_margin_input),
                 str(objective_mode),
                 float(alpha),
                 max_monthly_payment,
@@ -849,10 +814,11 @@ with tab2:
              st.rerun()
 
 with tab3:
+    
     st.subheader("מחזור משכנתא")
 
-    # --- 1. הגדרת פונקציות עזר (חייבות להופיע בראש הטאב) ---
-    def plot_table_and_graf(data):
+    # --- 1. הגדרת פונקציות עזר ---
+    def plot_table_and_graf(data,label):
             # יצירת ה-DataFrame הבסיסי מהנתונים
             df_routes_var = pd.DataFrame([val[0] for val in data])
             
@@ -865,98 +831,111 @@ with tab3:
             else:
                 df_routes_var['אחוז מהתמהיל'] = 0
 
-            # סדר עמודות חדש כדי שהאחוז יופיע ליד הסכום
-            cols_order = ["מסלול", "סכום", "אחוז מהתמהיל", "תקופה (חודשים)", "ריבית", "החזר ראשון"]
+            # סדר עמודות חדש
+            cols_order = ["מסלול","תדירות שינוי", "סכום", 'סך כל התשלומים', "תקופה (חודשים)", "ריבית", "החזר ראשון", "אחוז מהתמהיל"]
             df_routes_var = df_routes_var[cols_order]
 
             st.data_editor(
                 df_routes_var,
                 hide_index=True,
                 width="stretch",
-                key=f"data_editor_tab3_{hash(str(df_routes_var))}",  # מפתח ייחודי
+                # שינוי המפתח כאן:
+                key=f"data_editor_{label}", 
                 column_config={
-                    "מסלול": st.column_config.SelectboxColumn(
-                        "מסלול", options=df_routes_var['מסלול'].unique().tolist()
-                    ),
-                    "סכום": st.column_config.NumberColumn("סכום", step=1000, format="₪%d"),
+                    "מסלול": st.column_config.SelectboxColumn("מסלול", options=df_routes_var['מסלול'].unique().tolist()),
+                    "סכום": st.column_config.NumberColumn("סכום", format="₪%d"),
+                    'סך כל התשלומים': st.column_config.NumberColumn("סך כל התשלומים", format="₪%d"),
                     "אחוז מהתמהיל": st.column_config.NumberColumn("אחוז מהתמהיל", format="%.1f%%"),
-                    "תקופה (חודשים)": st.column_config.NumberColumn("תקופה (חודשים)", step=1),
-                    "ריבית": st.column_config.NumberColumn("ריבית (%)", format="%.2f"),
-                    "החזר ראשון": st.column_config.NumberColumn("החזר ראשון", step=1),
+                    "ריבית": st.column_config.NumberColumn("ריבית", format="%.6f%%"),
                 }
             )
-            # חישובים מצטברים
-            current_mortage = []
-            max_len = 0
-            for i, sch in enumerate([val[1] for val in data]):
-                max_len = max(max_len, len(sch))
-                current_mortage.append((i, sch))
 
-            L = max_len
-            X = list(range(1, L+1))
-            total_payment = [0.0] * L
-            total_interest = [0.0] * L
-            total_principal_base = [0.0] * L
-            total_indexation = [0.0] * L
-            total_used_rate = [0.0] * L
-
-            for _, sch in current_mortage:
-                xs, opening, payment, interest, principal_base, indexation, closing, used_rate = _schedule_arrays(sch)
-                total_payment = [a+b for a, b in zip(total_payment, _pad(payment, L))]
-                total_interest = [a+b for a, b in zip(total_interest, _pad(interest, L))]
-                total_principal_base = [a+b for a, b in zip(total_principal_base, _pad(principal_base, L))]
-                total_indexation = [a+b for a, b in zip(total_indexation, _pad(indexation, L))]
-                total_used_rate = [a+b for a, b in zip(total_used_rate, _pad(used_rate, L))]
-
-            for m in range(L):
-                total_used_rate[m] = total_used_rate[m] / len(current_mortage)
-
-            # סיכומים
-            total_P, total_I, total_K = 0, 0, 0
-            for _, sch in current_mortage:
-                P, I, K = summarize_schedule(sch)
-                total_P += P
-                total_I += I
-                total_K += K
-
-            col1, col2, col3, col4, col5 = st.columns(5)
-            #col1.metric("סכום קרן שנותר", f"₪{total_P:,.0f}")
-            col1.metric("יתרה לסילוק כולל עמלות", f"₪{total_P:,.0f}")
-            col2.metric("סה״כ ריבית", f"₪{total_I:,.0f}")
-            col3.metric("סה״כ הצמדה", f"₪{total_K:,.0f}")
-            col4.metric("סך התשלומים", f"₪{(total_P+total_I+total_K):,.0f}")
-            col5.metric("החזר ראשון", f"₪{total_payment[0]:,.0f}")
-
-            # גרף החזר חודשי
+            # הכנת נתונים לגרפים
+            max_len = max(len(val[1]) for val in data)
+            X = list(range(1, max_len + 1))
+            
+            # גרף החזר חודשי מפורט (Stacked)
             fig_tot_pay = go.Figure()
-            fig_tot_pay.add_trace(go.Scatter(x=X, y=total_payment, mode="lines", name="תשלום חודשי כולל"))
-            fig_tot_pay.update_layout(title="החזר חודשי כולל", xaxis_title="חודש", yaxis_title="₪")
+            
+            # גרף ריבית אפקטיבית לכל מסלול
+            fig_used_rate = go.Figure()
+            
+            total_principal_base = [0.0] * max_len
+            total_interest = [0.0] * max_len
+            total_indexation = [0.0] * max_len
+            total_monthly_sum = [0.0] * max_len
 
-            # גרף חלוקת תשלום שנתי
-            years = (L-1)//12 + 1
-            y_idx = list(range(1, years+1))
+            for i, (info, sch) in enumerate(data):
+                track_name = info['מסלול']
+                _, _, payment, interest, principal_base, indexation, _, used_rate = _schedule_arrays(sch)
+                
+                # הוספת מסלול לגרף החזר חודשי (שטח נערם)
+                fig_tot_pay.add_trace(go.Scatter(
+                    x=X, y=_pad(payment, max_len), 
+                    mode="lines", 
+                    stackgroup='one', # זה מה שיוצר את הערימה
+                    name=f"החזר: {track_name}"
+                ))
+                
+                # הוספת מסלול לגרף ריבית אפקטיבית (קו נפרד)
+                fig_used_rate.add_trace(go.Scatter(
+                    x=X, y=_pad(used_rate, max_len), 
+                    mode="lines", 
+                    name=f"ריבית: {track_name}"
+                ))
+
+                # צבירת נתונים לגרף השנתי (P, I, K)
+                padded_p = _pad(principal_base, max_len)
+                padded_i = _pad(interest, max_len)
+                padded_k = _pad(indexation, max_len)
+                padded_pay = _pad(payment, max_len)
+                
+                for m in range(max_len):
+                    total_principal_base[m] += padded_p[m]
+                    total_interest[m] += padded_i[m]
+                    total_indexation[m] += padded_k[m]
+                    total_monthly_sum[m] += padded_pay[m]
+
+            # הגדרות עיצוב גרפים
+            fig_tot_pay.update_layout(title="הרכב ההחזר החודשי (לפי מסלולים)", xaxis_title="חודש", yaxis_title="₪", hovermode="x unified")
+            fig_used_rate.update_layout(title="ריבית אפקטיבית לאורך זמן (לכל מסלול)", xaxis_title="חודש", yaxis_title="%", hovermode="x unified")
+
+            # גרף חלוקת תשלום שנתי (מציג קרן/ריבית/הצמדה של כל התמהיל)
+            years = (max_len - 1) // 12 + 1
+            y_idx = list(range(1, years + 1))
             pr_y, in_y, idx_y = [0.0]*years, [0.0]*years, [0.0]*years
-            for m in range(1, L+1):
-                y = (m-1)//12
-                pr_y[y] += total_principal_base[m-1]
-                in_y[y] += total_interest[m-1]
-                idx_y[y] += total_indexation[m-1]
+            for m in range(max_len):
+                y = m // 12
+                pr_y[y] += total_principal_base[m]
+                in_y[y] += total_interest[m]
+                idx_y[y] += total_indexation[m]
 
             fig_tot_br = go.Figure()
-            fig_tot_br.add_trace(go.Bar(x=y_idx, y=pr_y, name="קרן", marker=dict(color='blue')))
-            fig_tot_br.add_trace(go.Bar(x=y_idx, y=idx_y, name="הצמדה", marker=dict(color='green')))
-            fig_tot_br.add_trace(go.Bar(x=y_idx, y=in_y, name="ריבית", marker=dict(color='red')))
-            fig_tot_br.update_layout(title="חלוקת התשלום השנתי", barmode="stack", xaxis_title="שנה", yaxis_title="₪")
+            fig_tot_br.add_trace(go.Bar(x=y_idx, y=pr_y, name="קרן", marker=dict(color='#2E86C1')))
+            fig_tot_br.add_trace(go.Bar(x=y_idx, y=idx_y, name="הצמדה", marker=dict(color='#28B463')))
+            fig_tot_br.add_trace(go.Bar(x=y_idx, y=in_y, name="ריבית", marker=dict(color='#CB4335')))
+            fig_tot_br.update_layout(title="חלוקת תשלום שנתי (קרן vs ריבית vs הצמדה)", barmode="stack", xaxis_title="שנה", yaxis_title="₪")
 
-            # גרף ריבית אפקטיבית
-            fig_used_rate = go.Figure()
-            fig_used_rate.add_trace(go.Scatter(x=X, y=total_used_rate, mode="lines", name="הריבית האפקטיבית"))
-            fig_used_rate.update_layout(title="הריבית האפקטיבית", xaxis_title="חודש", yaxis_title="%")
+            # סיכומים במטריקות
+            total_P = sum(total_principal_base)
+            total_I = sum(total_interest)
+            total_K = sum(total_indexation)
 
-            c1, c2, c3 = st.columns(3)
-            with c1: st.plotly_chart(fig_tot_pay, width="stretch")
-            with c2: st.plotly_chart(fig_tot_br, width="stretch")
-            with c3: st.plotly_chart(fig_used_rate, width="stretch")
+            col1, col2, col3, col4, col5 = st.columns(5)
+            col1.metric("יתרה לסילוק", f"₪{total_P:,.0f}")
+            col2.metric("סה״כ ריבית", f"₪{total_I:,.0f}")
+            col3.metric("סה״כ הצמדה", f"₪{total_K:,.0f}")
+            col4.metric("סך כל התשלומים", f"₪{(total_P+total_I+total_K):,.0f}")
+            col5.metric("החזר ראשון", f"₪{total_monthly_sum[0]:,.0f}")
+
+            # תצוגת הגרפים בתוך plot_table_and_graf
+            st.plotly_chart(fig_tot_pay, use_container_width=True, key=f"pay_curve_{label}")
+            
+            c1, c2 = st.columns(2)
+            with c1: 
+                st.plotly_chart(fig_tot_br, use_container_width=True, key=f"bar_chart_{label}")
+            with c2: 
+                st.plotly_chart(fig_used_rate, use_container_width=True, key=f"rate_curve_{label}")
 
     def summarize_mortgage(data, label, base_total=None):
             """מחזיר סיכום מספרי של תרחיש"""
@@ -964,125 +943,82 @@ with tab3:
             L = max(len(sch) for _, sch in current_mortage)
 
             total_payment = [0.0] * L
-            #max_payment_per_track = []
             for _, sch in current_mortage:
                 _, _, payment, _, _, _, _, _ = _schedule_arrays(sch)
                 total_payment = [a+b for a, b in zip(total_payment, _pad(payment, L))]
-                #max_payment_per_track.append(max(payment))
+            
             max_payment = max(total_payment)
             total_P, total_I, total_K = 0, 0, 0
             for _, sch in current_mortage:
                 P, I, K = summarize_schedule(sch)
-                total_P += P
-                total_I += I
-                total_K += K
+                total_P += P; total_I += I; total_K += K
 
             total_sum = total_P + total_I + total_K
-            first_payment = total_payment[0]
-
-            # חיסכון מול התרחיש הבסיסי
-            saving_abs = 0
-            saving_pct = 0
-            if base_total:
-                saving_abs = base_total - total_sum
-                saving_pct = (saving_abs / base_total) * 100
+            saving_abs = (base_total - total_sum) if base_total else 0
+            saving_pct = (saving_abs / base_total * 100) if base_total else 0
 
             return {
                 "תרחיש": label,
-                "החזר חודשי ראשון": first_payment,
+                "החזר חודשי ראשון": total_payment[0],
                 "החזר חודשי מקסימלי": max_payment,
                 "סך הכל תשלומים": total_sum,
                 "חיסכון ₪": saving_abs,
                 "חיסכון %": saving_pct
             }, total_payment
 
-
-
-    # אתחול ה-State אם הוא לא קיים
-    if "cache_id" not in st.session_state:
-        st.session_state.cache_id = 0
-    if "last_file_hash" not in st.session_state:
-        st.session_state.last_file_hash = None
-
-    col_header, col_reset = st.columns([4, 1])
-    with col_header:
-        st.subheader("מחזור משכנתא")
-
+    # --- לוגיקת טעינת קובץ וחישובים (נשאר זהה לקוד שלך) ---
+    if "cache_id" not in st.session_state: st.session_state.cache_id = 0
+    
+    col_header, _ = st.columns([4, 1])
+    with col_header: st.subheader("מחזור משכנתא")
 
     uploaded_file = st.file_uploader("העלה קובץ json", type=["json"], key="pdf_up_tab3")
     capital_allocation = st.selectbox("הקצאת הון (LTV)", options=["35%", "50%", "60%", "75%", "100%", "any"], key="cap_tab3")
 
     if uploaded_file and capital_allocation:
         file_bytes = uploaded_file.getvalue()
-
-        # הרצת החישוב עם ה-cache_id הנוכחי
-        with st.spinner("מבצע חישובים"):
-            print("file_bytes")
+        with st.spinner("מבצע חישובים..."):
             api_json = json.loads(file_bytes.decode("utf-8-sig"))
-            print("api_json")
             tracks = convert_api_json_to_loan_tracks(api_json)
-            print("tracks")
-            #ori_m, upd_m, non_m, opt_m = create_4_candidate_mortages(tracks, capital_allocation)
-            #print("ori_m, upd_m, non_m, opt_m ")
-            best_res,ori_m, upd_m, non_m, opt_m= find_best_mortage(tracks, capital_allocation)
-            #best_res = find_best_mortage(tracks, capital_allocation)
+            best_res, ori_m,ori_m2, upd_m, non_m, opt_m = find_best_mortage(tracks, capital_allocation)
 
-        
         options_map = {
-            "משכנתא נוכחית": ori_m, "משכנתא מעודכנת": upd_m,
+            "משכנתא נוכחית": ori_m, "משכנתא נוכחית ללא עמלות וריביות":ori_m2, "משכנתא מעודכנת": upd_m,
             "משכנתא לא צמודה": non_m, "משכנתא מחזור אופטימלי": opt_m
         }
 
-        # --- 3. באנר ROBIN (מנצח) ---
+        # באנר ROBIN
         total_pay_ori = sum(t[0]['סך כל התשלומים'] for t in ori_m)
+        years_ori = max(t[0]['תקופה (חודשים)'] for t in ori_m) / 12
         if best_res:
-            best_mort, total_pay_best, first_pay_best, max_pay_best, best_name = best_res
+            best_mort, total_pay_best, _, _, best_name = best_res
+            years_best = max(t[0]['תקופה (חודשים)'] for t in best_mort) / 12
+            years_saved = years_ori - years_best
+            years_text = f" וקיצור של {years_saved:.1f} שנים" if years_saved > 0 else ""
             st.markdown(f"""<div style="background-color:#2E4C2E; color:white; padding:20px; border-radius:15px; text-align:center;">
-                <h1 style='color:#76ff03;'>חיסכון של ₪{total_pay_ori - total_pay_best:,.0f}</h1>
+                <h1 style='color:#76ff03;'>חיסכון של ₪{total_pay_ori - total_pay_best:,.0f}{years_text}</h1>
                 <p>התמהיל המנצח: {best_name}</p></div>""", unsafe_allow_html=True)
+        else:
+            st.markdown(f"""<div style="background-color:#2E4C2E; color:white; padding:20px; border-radius:15px; text-align:center;">
+                <h1 style='color:#76ff03;'>חיסכוןאין  של אין₪>""", unsafe_allow_html=True)
 
-        # --- 4. השוואה (Multiselect) ---
-        # --- 4. השוואה (Multiselect) ---
+        # השוואה
         selected = list(options_map.keys())
-
         if selected:
             fig_comp = go.Figure()
             summaries = []
             loan_total = sum(t[0]['סכום'] for t in ori_m)
-            
-            # שמירת זרם התשלומים של המקור להשוואה
             _, series_ori = summarize_mortgage(ori_m, "משכנתא נוכחית", total_pay_ori)
-            
-            # פונקציית עזר לסיכום שנתי
-            def to_yearly(monthly_list):
-                return [sum(monthly_list[i:i+12]) for i in range(0, len(monthly_list), 12)]
-            
-            yearly_ori = to_yearly(series_ori)
-            all_yearly_savings = {} # מילון לשמירת החיסכון השנתי של כל בחירה
 
             for opt in selected:
                 summary, series = summarize_mortgage(options_map[opt], opt, total_pay_ori)
                 summary['החזר לשקל'] = summary["סך הכל תשלומים"] / loan_total
                 summaries.append(summary)
-                
-                # הוספת קו לגרף ההחזרים החודשיים
-                fig_comp.add_trace(go.Scatter(y=series, mode="lines", name=f"החזר חודשי: {opt}"))
-                
-                # חישוב חיסכון שנתי מול המקור
-                y_series = to_yearly(series)
-                max_y = max(len(yearly_ori), len(y_series))
-                
-                # השלמת אפסים להשוואה
-                temp_ori = yearly_ori + [0] * (max_y - len(yearly_ori))
-                temp_opt = y_series + [0] * (max_y - len(y_series))
-                
-                # חישוב חיסכון שנתי (מקור פחות הצעה)
-                all_yearly_savings[opt] = [orig - sug for orig, sug in zip(temp_ori, temp_opt)]
+                fig_comp.add_trace(go.Scatter(y=series, mode="lines", name=f"החזר: {opt}"))
             
             st.write("### 📉 השוואת החזרים חודשיים")
-            st.plotly_chart(fig_comp, width='stretch')
+            st.plotly_chart(fig_comp, use_container_width=True)
 
-            # --- 5. הטבלה המבוקשת ---
             st.subheader("טבלה השוואתית")
             st.dataframe(pd.DataFrame(summaries).style.format({
                 "החזר חודשי ראשון": "₪{:,.0f}", "החזר חודשי מקסימלי": "₪{:,.0f}",
@@ -1090,52 +1026,11 @@ with tab3:
                 "חיסכון %": "{:.1f}%", "החזר לשקל": "{:.2f}"
             }), width='stretch')
 
-            # --- 6. גרף חיסכון שנתי להשוואה (התוספת החדשה) ---
-            st.divider()
-            st.subheader("💰 חיסכון שנתי לכל הצעה (מול המצב הקיים)")
-            
-            fig_savings = go.Figure()
-            
-            for label, savings in all_yearly_savings.items():
-                if label == "משכנתא נוכחית": continue # אין טעם להשוות את המקור לעצמו
-                
-                years_axis = list(range(1, len(savings) + 1))
-                fig_savings.add_trace(go.Bar(
-                    x=years_axis, 
-                    y=savings, 
-                    name=f"חיסכון ב-{label}"
-                ))
-
-            fig_savings.update_layout(
-                title="כמה כסף נשאר לכם בכיס בכל שנה?",
-                xaxis_title="שנה",
-                yaxis_title="₪ חיסכון שנתי",
-                barmode='group', # מציג עמודות אחת ליד השנייה
-                hovermode="x unified",
-                legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="center", x=0.5)
-            )
-            
-            st.plotly_chart(fig_savings, width='stretch')
-            
-            # בונוס: טבלת חיסכון מצטבר
-            with st.expander("לצפייה בחיסכון המצטבר לפי שנים"):
-                cum_data = {"שנה": list(range(1, max(len(s) for s in all_yearly_savings.values()) + 1))}
-                for label, savings in all_yearly_savings.items():
-                    if label == "משכנתא נוכחית": continue
-                    current_sum = 0
-                    cum_list = []
-                    for s in savings:
-                        current_sum += s
-                        cum_list.append(current_sum)
-                    cum_data[label] = cum_list
-                
-                st.dataframe(pd.DataFrame(cum_data).style.format("₪{:,.0f}"), width='stretch')
-
-        # --- 6. פירוט מלא (Expander) ---
+        # פירוט מלא
         st.divider()
         for label, data in options_map.items():
-            with st.expander(f"פירוט: {label}"):
-                plot_table_and_graf(data)
+            with st.expander(f"פירוט מלא: {label}"):
+                plot_table_and_graf(data, label) # העברת ה-label כאן
          
 with tab4:
     # ----- גרף אינפלציה -----
@@ -1460,8 +1355,6 @@ with tab6:
                 con.sensitivity,#sensitivity=
                 con.prepay_window_key,
                 con.durations_months(max_period_orig),#durations_months=[m for m in range(12, max_period_orig, 1)],
-                con.bank_of_israel_rate,
-                con.prime_margin,
                 con.objective_mode,
                 con.alpha,
                 monthly_payment_orig,

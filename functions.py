@@ -13,24 +13,72 @@ from typing import  List,Dict, Callable, Tuple, Optional
 import re
 import mortgage_data_loader as dl
 import pandas as pd 
-import json
-import os 
 from dateutil.relativedelta import relativedelta
 import sys
 print(f"🐍 Python Version: {sys.version}")
 # --- Initialize Data Locally (No dependency on data_loader_service) ---
 # This uses the V2 loader which caches the request via st.cache_resource
-XLSX_PATH_MODEL,XLSX_PATH_NOMINAL,XLSX_PATH_REAL = dl.fetch_latest_boi_excels()
-print(f'extracted latest_boi_excels from: {XLSX_PATH_MODEL}')
-DATASTORE = dl.load_workbook_data(XLSX_PATH_MODEL, con.HORIZON, con.SCENARIO)
 
-ancors = dl.load_boi_data()
-NOMINAL_ANCHOR = ancors["nominal_anchor"]
-REAL_ANCHOR = ancors["real_anchor"]
-MAKAM_ANCOR = ancors["makam_anchor"]
-#OLD_NOMINAL_ANCHOR= ancors['old_nominal_anchor']
-#OLD_REAL_ANCHOR= ancors['old_real_anchor']
+def read_and_load_data():
 
+    global XLSX_PATH_MODEL,XLSX_PATH_NOMINAL,XLSX_PATH_REAL, DATASTORE, NOMINAL_ANCHOR, REAL_ANCHOR, MAKAM_ANCHOR
+
+    XLSX_PATH_MODEL,XLSX_PATH_NOMINAL,XLSX_PATH_REAL = dl.fetch_latest_boi_excels()
+    print(f'extracted latest_boi_excels from: {XLSX_PATH_MODEL}')
+    DATASTORE = dl.load_workbook_data(XLSX_PATH_MODEL, con.HORIZON, con.SCENARIO)
+
+    if con.Sdarot:
+        ancors = dl.load_boi_data()
+        NOMINAL_ANCHOR = ancors["nominal_anchor"]
+        REAL_ANCHOR = ancors["real_anchor"]
+        MAKAM_ANCHOR = ancors["makam_anchor"]
+    else: 
+
+        def get_real_anchor_from_last_month(file_path):
+            # 1. טעינת הקובץ ודילוג על כותרות בנק ישראל
+            df = pd.read_excel(file_path, skiprows=7)
+            
+            # 2. ניקוי שמות עמודות (הסרת רווחים והפיכת "1.0" ל-"1")
+            df.columns = [str(col).strip().replace('.0', '') for col in df.columns]
+            
+            # 3. סינון שורות שאינן תאריך
+            first_col = df.columns[0]
+            df['date_dt'] = pd.to_datetime(df[first_col], errors='coerce')
+            df_filtered = df.dropna(subset=['date_dt']).copy()
+
+            if df_filtered.empty:
+                print(f"Warning: No valid data found in {file_path}")
+                return None
+
+            # 4. שליפת השורה האחרונה בהחלט (iloc[-1] הופך אותה ל-Series)
+            last_row = df_filtered.iloc[-1]
+            print(last_row)
+            # 5. יצירת המילון מהשורה האחרונה
+            # השימוש ב-last_row[column_name] מחזיר ערך מספרי (float) נקי
+            anchor_from_exsl = {
+                1:  last_row.get('1', 0),
+                2:  last_row.get('2', 0),
+                3:  last_row.get('3', 0),
+                4:  last_row.get('4', 0),
+                5:  last_row.get('5', 0),
+                7:  last_row.get('7', 0),
+                10: last_row.get('10', 0),
+                15: last_row.get('15', 0)
+            }
+            
+            return anchor_from_exsl
+        
+        print('NOMINAL_ANCHOR')
+        NOMINAL_ANCHOR = get_real_anchor_from_last_month(XLSX_PATH_NOMINAL)
+        
+        print('REAL_ANCHOR')
+        REAL_ANCHOR = get_real_anchor_from_last_month(XLSX_PATH_REAL)
+        
+        print('MAKAM_ANCHOR')
+        MAKAM_ANCHOR = dl.load_makam_ancor()
+        print(MAKAM_ANCHOR)
+    
+read_and_load_data()
 # =============================================================================
 # CLASS: INTEREST RATE CALCULATOR
 # =============================================================================
@@ -55,6 +103,10 @@ class InterestRateCalculator:
             "Variable Non-Indexed": NOMINAL_ANCHOR,  # שנים→ריבית (אחוזים)
             "Variable Indexed":     REAL_ANCHOR,     # שנים→ריבית (אחוזים)
         }
+        #print(NOMINAL_ANCHOR)
+        #print(REAL_ANCHOR)
+        #import pdb;pdb.set_trace()
+
 
         # --- קבוע: שולף ממילון ידני (ניתן override בפרמטרים) ---
         self.Fixed_Non_Indexed = dict(con.FIXED_NON_INDEXED_TABLE)
@@ -71,7 +123,7 @@ class InterestRateCalculator:
                 self.Spread.setdefault(k, {}).update(v)
 
         self.Rules_loan_percentage = dict(con.LOAN_ADJ_RULES)
-        self.makam_ancor = MAKAM_ANCOR
+        self.makam_ancor = MAKAM_ANCHOR
     @staticmethod
     def _bucket_val(d: Dict[str, float], bucket: str) -> float:
         return float(d.get(bucket, d.get("any", 0.0))) if d else 0.0
@@ -98,17 +150,17 @@ class InterestRateCalculator:
     ) -> Optional[float]:
         """חישוב ריבית מתואמת למסלול בהתאם לעוגן, מרווח והקצאת הון."""
         if track_type == 'grant':
-            return 0 
+            return {'ogen':0,'tosefet':0,'sum_rate':0}
+        
         loan_adj_global = float(self.Rules_loan_percentage[track_type].get(loan_percentage, 0.0)) 
         
         if "Prime" in track_type:
             
             years_key = int(np.ceil((remain_months) / 12)) 
             base = self.prime_rate 
-            spr  = self.Spread["Prime"] # self._bucket_val(self.Spread.get("Prime", {}), years_key) # -מרווח -0.8
+            spr  = self.Spread["Prime"] 
             sum_rate = float(base + spr + loan_adj_global)
-            #print(f'>>> get_adjusted_rate | track_type:{track_type}, loan_percentage: {loan_percentage}, base:{base}, spr:{spr}, loan_adj_global:{loan_adj_global}, sum_rate:{sum_rate}')
-            return sum_rate
+            return {'ogen':base,'tosefet':spr+loan_adj_global,'sum_rate':sum_rate}
 
         if track_type.startswith("Variable"):
             
@@ -118,13 +170,9 @@ class InterestRateCalculator:
             anchor_dict = self.Anchor["Variable Non-Indexed"] if "Non-Indexed" in track_type else self.Anchor["Variable Indexed"]
             spr = self.Spread["Variable Non-Indexed"] if "Non-Indexed" in track_type else self.Spread["Variable Indexed"]
             anchor_rate = anchor_dict.get(years_key)
-            if anchor_rate is None:
-                return None
             sum_rate = float(anchor_rate + spr + loan_adj_global)
-            #print(f'>>> get_adjusted_rate | track_type:{track_type}, loan_percentage: {loan_percentage},change_freq_months:{change_freq_months}, anchor_rate:{anchor_rate}, spr:{spr}, loan_adj_global:{loan_adj_global}, sum_rate:{sum_rate}')
-
-            return sum_rate
-
+            return {'ogen':anchor_rate,'tosefet':spr + loan_adj_global,'sum_rate':sum_rate}
+            
         if track_type == "Fixed Non-Indexed" or track_type == "Fixed Indexed":
             
             years_key = int(np.ceil((remain_months) / 12))  
@@ -134,23 +182,25 @@ class InterestRateCalculator:
                
                 raise ValueError(f"לא נמצאה ריבית קבועה עבור {track_type} לשנים {years_key}. מלאי את הטבלה הידנית.")
             base_rate = table.get(yk)
-
             sum_rate = float(base_rate + loan_adj_global)
-            #print(f'>>> get_adjusted_rate | track_type:{track_type}, loan_percentage: {loan_percentage}, years_key:{years_key}, base:{base_rate}, loan_adj_global:{loan_adj_global}, sum_rate:{sum_rate}')
-
-            return float(base_rate + loan_adj_global)
-
+            return {'ogen':0,'tosefet':0,'sum_rate':sum_rate}
+            
         if track_type == 'Makam':
             base_rate = self.makam_ancor
             #spr = self.Spread["Makam"]
             sum_rate = float(base_rate)
             #print(f'>>> get_adjusted_rate | track_type:{track_type}, loan_percentage: {loan_percentage}, base:{base_rate}, loan_adj_global:{loan_adj_global}, spr:{spr}, sum_rate:{sum_rate}')
-            return sum_rate
+            return {'ogen':sum_rate,'tosefet':0,'sum_rate':sum_rate}
+            
+            #return sum_rate
         
-        
-        
-        return 0
+        if track_type == 'zacaot':
+            return {'ogen':0,'tosefet':0,'sum_rate':con.zacaot}
+            
+        return {'ogen':0,'tosefet':0,'sum_rate':0}
 
+# ---------- ספק ריביות מהעוגנים ----------
+calc = InterestRateCalculator()
 # =============================================================================
 #  GENERAL HELPERS
 # =============================================================================
@@ -294,7 +344,7 @@ def create_total_months(loan_tracks):
         first_payment_date  = _as_date(rec['First_Payment_Date'])
         latter_date_object  = _as_date(rec['latter_date_object'])
 
-        rec['total_months_Remained'] = max(0, _months_between(latter_date_object, last_payment_date))
+        rec['total_months_Remained'] = rec['loan_months']#max(0, _months_between(latter_date_object, last_payment_date))+1
         rec['total_months_passed']   = max(0, _months_between(first_payment_date, latter_date_object))
         rec['total_months']          = max(0, _months_between(first_payment_date, last_payment_date))
 
@@ -374,6 +424,46 @@ def build_monthly_rates_adaptive(
     #t#emp = [(tosefet+((ogen * (100+x))/100.))/12/100 for x in anchor_annual_pct]
     #print(temp)
     return [((rate_annual_start + dp) / 12.0 / 100.0) for dp in anchor_annual_pp]
+
+def build_monthly_rates_adaptive_miconit(
+    rate_annual_start: float, # הריבית הנוכחית בדו"ח (למשל 2.51)
+    zero_series: List[float],
+    freq: int,
+    months: int,
+    months_to_next_reset: int = 0,
+    real_margin: float = 0, # המרווח האמיתי שכולל את התוספת המיכונית (למשל 4.4)
+) -> List[float]:
+    """
+    ממיר את נתיב העוגן לריביות חודשיות תוך שימוש במרווח האמיתי (המילוני).
+    שומר על הריבית הנוכחית עד העדכון, ואז עובר לעוגן שוק + מרווח אמיתי.
+    """
+    z_curve_nominal = {m: r for m, r in enumerate(zero_series, start=1)}
+    
+    # בניית נתיב העוגנים העתידי לפי עקום השוק
+    anchor_path = build_anchor_path_fixed(
+        z_curve_nominal, 
+        V=freq, 
+        term_months=months, 
+        months_to_next_reset=months_to_next_reset
+    )
+    
+    anchor_annual_pct = [a * 100.0 for a in anchor_path] # המרה לאחוזים
+    
+    monthly_rates = []
+    for i in range(months):
+        # 1. עד למועד העדכון הבא: הריבית נשארת בדיוק מה שכתוב בדו"ח היום
+        if i < (months_to_next_reset or 0):
+            annual_rate = rate_annual_start
+        else:
+            # 2. ממועד העדכון ואילך: עוגן השוק הצפוי + המרווח האמיתי (כולל המיכונית)
+            # לפי הסרטון: ריבית כוללת = עוגן אג"ח ממשלתי + תוספת כוללת
+            #import pdb;pdb.set_trace()
+            annual_rate = anchor_annual_pct[i] + real_margin 
+        
+        # המרה לריבית חודשית עשרונית לטובת לוח הסילוקין
+        monthly_rates.append(annual_rate / 12.0 / 100.0)
+    
+    return monthly_rates
 
 def calculate_spitzer_adaptive(
     loan,
@@ -929,8 +1019,8 @@ if 1:
         return out
 
 # ------------------------------ DISPATCHER ------------------------------
-def calculate_schedule(principal, months, annual_rate, schedule_type, rate_type, freq_rate_change, prime_margin: float = con.prime_margin,prime_offset = 0,months_to_next_reset=0):
-    #print('calculate_schedule:',principal, months, annual_rate, schedule_type, rate_type, freq_rate_change,prime_margin,months_to_next_reset)
+def calculate_schedule(principal, months, annual_rate, schedule_type, rate_type, freq_rate_change, prime_margin: float = con.prime_margin,prime_offset = 0,months_to_next_reset=0,real_margin = 0):
+    #print('calculate_schedule:',principal, months, annual_rate, schedule_type, rate_type, freq_rate_change,prime_margin,months_to_next_reset,real_margin)
     #import pdb;pdb.set_trace()
     if rate_type == "קלצ":
         Periodic_inflation = [0.0] * months
@@ -946,7 +1036,12 @@ def calculate_schedule(principal, months, annual_rate, schedule_type, rate_type,
         Change_compared_to_the_base_index = [1.0] * months
         zero_series = get_zero_series(con.HORIZON, con.SHEET_NOMINAL)
         rate = annual_rate
-        monthly_rates = build_monthly_rates_adaptive(rate, zero_series, freq_rate_change, months,months_to_next_reset)
+        
+        if real_margin:
+            # תוספת מיקונית
+            monthly_rates = build_monthly_rates_adaptive_miconit(rate, zero_series, freq_rate_change, months,months_to_next_reset,real_margin)
+        else:
+            monthly_rates = build_monthly_rates_adaptive(rate, zero_series, freq_rate_change, months,months_to_next_reset)
         #print('zero_series')
         #print(zero_series)
         #monthly_rates = build_monthly_rates(rate, zero_series, freq_rate_change, months)
@@ -956,12 +1051,18 @@ def calculate_schedule(principal, months, annual_rate, schedule_type, rate_type,
         Periodic_inflation, Change_compared_to_the_base_index = get_inflation_series()
         zero_series = get_zero_series(con.HORIZON, con.SHEET_REAL)
         rate = annual_rate
-        monthly_rates = build_monthly_rates_adaptive(rate, zero_series, freq_rate_change, months,months_to_next_reset)
+        #import pdb;pdb.set_trace()
+        if real_margin:
+            # תוספת מיקונית
+            monthly_rates = build_monthly_rates_adaptive_miconit(rate, zero_series, freq_rate_change, months,months_to_next_reset,real_margin)
+        else:
+            monthly_rates = build_monthly_rates_adaptive(rate, zero_series, freq_rate_change, months,months_to_next_reset)
         #monthly_rates = build_monthly_rates(rate, zero_series, freq_rate_change, months)
 
     elif rate_type == "פריים":
         boi_series_percent = DATASTORE.boi_forward_annual_pct
         rate_to_add = prime_margin+prime_offset
+        
         #import pdb;pdb.set_trace()
         monthly_rates = prepare_prime_monthly_rates(months, boi_series_percent, rate_to_add)
         Periodic_inflation = [0.0] * months
@@ -1044,12 +1145,11 @@ class CandidateOption:
     freq_rate_change: int
     cost_per_unit: float
     pmt1_per_unit: float
-    cost_per_unit_norm:float
-    pmt1_per_unit_norm:float
-    eff: float
-    eff_dis: float
     max_payment_in_all_mortage: float
     original_principal: float
+    prime_offset: float
+    months_to_next_reset: int 
+    real_margin : float
 
 # ---------- עזרי קלט ----------
 def _safe_int(x, default=0):
@@ -1064,30 +1164,7 @@ def _safe_int(x, default=0):
     except Exception:
         return default
 
-# ---------- ספק ריביות מהעוגנים ----------
-def _make_anchor_rate_provider(bank_of_israel_rate: float,
-                               prime_margin: float,
-                               loan_percentage_bucket: str):
-    
-    calc = InterestRateCalculator(
-        bank_of_israel_rate=bank_of_israel_rate,
-        prime_margin=prime_margin)
-        
-    
-    def _provider(rate_type_he: str, change_freq_months: int, remain_months: int):
-        track = _map_rate_type_to_anchor_track(rate_type_he)
-        if track is None:
-            return None
-        try:
-            return calc.get_adjusted_rate(
-                track_type=track,
-                loan_percentage=loan_percentage_bucket, # "35%"/"50%"/...
-                change_freq_months=int(change_freq_months or 0),
-                remain_months=int(remain_months or 0),
-            )
-        except Exception:
-            return None
-    return _provider
+
 
 # ---------- קטלוג פנימי של מסלולים – מורחב להתאמה לטבלה ----------
 def _default_catalog() -> List[Dict]:
@@ -1111,12 +1188,11 @@ def _default_catalog() -> List[Dict]:
 
 # ---------- יצירת מועמדים  ----------
 def generate_candidate_mixtures(
-    durations_months: Optional[List[int]] = None,
-    rate_provider: Optional[Callable[[str, int, int], Optional[float]]] = None,routes_data_ori = None,
-    *,
-    ref_principal: float,
-    loan_pct_bucket: str
-) -> List[CandidateOption]:
+    durations_months,
+    ref_principal,
+    loan_pct_bucket,
+    routes_data_ori):
+    
     if durations_months is None:
         durations_months = con.DURATIONS_MONTHS_DEFAULT
     options: List[CandidateOption] = []
@@ -1129,60 +1205,51 @@ def generate_candidate_mixtures(
             m_int = _safe_int(m, 0)
             if not (0 < m_int <= 360):
                 continue
-            eff_rate = None
-            if rate_provider is not None:
-                eff_rate = rate_provider(rate_type_t, freq, m_int)
-            if eff_rate is None:
-                continue
-            try:
-                #import pdb;pdb.set_trace()
-                kwargs = dict(
-                    principal=float(ref_principal),
-                    months=int(m_int),
-                    annual_rate=float(eff_rate),
-                    #indexation=_indexation_for_rate(rate_type),
-                    schedule_type=schedule_t,
-                    rate_type=rate_type_t,
-                    freq_rate_change=int(freq),
-                )
-                
-                if rate_type_t == "פריים":
-                    prime_offset = con.LOAN_ADJ_RULES["Prime"][loan_pct_bucket] + con.SPREADS['Prime']
-                    kwargs["prime_margin"] = con.prime_margin   
-                    kwargs["prime_offset"] = prime_offset
-                
-                sch = calculate_schedule(**kwargs)
-                max_payment_in_all_mortage = max([i[2] for i in sch])
-                pr, it, idx = summarize_schedule(sch)
-                total_cost = pr + it + idx
-                cost_per_unit = float(total_cost) #/ float(ref_principal)
-                pmt1 = float(sch[0][2]) if sch and len(sch[0]) >= 3 else 0.0
-                pmt1_per_unit = pmt1 #/ float(ref_principal)
-                #import pdb;pdb.set_trace()
-
-            except Exception:
-                #
-                # import pdb;pdb.set_trace()
-                continue
-
+            rate_type = con.ANCHOR_TRACK_MAP[rate_type_t]
+            rate_dic = calc.get_adjusted_rate(rate_type,loan_pct_bucket, freq, m_int)
+            ogen,tosefet,sum_rate = rate_dic['ogen'],rate_dic['tosefet'],rate_dic['sum_rate']
+            boost_factor = 1 + (con.manual_interest_increase / 100.0)
+            sum_rate = sum_rate * boost_factor
+            #import pdb;pdb.set_trace()
+            kwargs = dict(
+                principal=float(ref_principal),
+                months=int(m_int),
+                annual_rate=float(sum_rate),
+                schedule_type=schedule_t,
+                rate_type=rate_type_t,
+                freq_rate_change=int(freq),
+                prime_margin=con.prime_margin,
+                prime_offset=tosefet,
+                months_to_next_reset = freq, 
+                real_margin = tosefet, 
+            )
+            
+            sch = calculate_schedule(**kwargs)
+            max_payment_in_all_mortage = max([i[2] for i in sch])
+            pr, it, idx = summarize_schedule(sch)
+            total_cost = pr + it + idx
+            cost_per_unit = float(total_cost) #/ float(ref_principal)
+            pmt1 = float(sch[0][2]) if sch and len(sch[0]) >= 3 else 0.0
+            pmt1_per_unit = pmt1 #/ float(ref_principal)
+            
             key = f"{rate_type_t}_{m_int}_f{freq}"
             options.append(CandidateOption(
                 key=key,
                 rate_type=rate_type_t,
                 schedule_type=schedule_t,
                 months=int(m_int),
-                annual_rate=float(eff_rate),
+                annual_rate=float(sum_rate),
                 freq_rate_change=int(freq),
                 cost_per_unit=float(cost_per_unit),
                 pmt1_per_unit=float(pmt1_per_unit),
-                cost_per_unit_norm = 0.0,
-                pmt1_per_unit_norm =  0.0,
-                eff =  0.0,
-                eff_dis =  0.0,
                 max_payment_in_all_mortage=max_payment_in_all_mortage,
-                original_principal = 0.0
+                original_principal = 0.0,
+                prime_offset=tosefet,
+                months_to_next_reset = freq, 
+                real_margin = tosefet, 
+                
             ))
-    #print(f' >>> >>> routes_data_ori:{routes_data_ori}')
+    
     if routes_data_ori:
         print(f'len(routes_data_ori) = {len(routes_data_ori)}')
         for tr_ori in routes_data_ori:
@@ -1195,10 +1262,16 @@ def generate_candidate_mixtures(
             if not freq:
                 freq = 0 
             
-            relevant_prime_offset = eff_rate - (con.prime_margin + con.bank_of_israel_rate)
-            print(f'rate_type_t:{rate_type_t},m_int:{m_int},schedule_t:{schedule_t},eff_rate:{eff_rate},')
-            kwargs = dict(principal=float(ref_principal), months=int(m_int),annual_rate=float(eff_rate),schedule_type=schedule_t,rate_type=rate_type_t,freq_rate_change=int(freq),prime_margin=con.prime_margin,prime_offset=relevant_prime_offset)
+            prime_offset=tr_ori[0]['prime_offset']
+            months_to_next_reset=tr_ori[0]['months_to_next_reset']
+            real_margin=tr_ori[0]['real_margin']
+            kwargs = dict(principal=float(ref_principal), months=int(m_int),annual_rate=float(eff_rate),
+                          schedule_type=schedule_t,rate_type=rate_type_t,freq_rate_change=int(freq),
+                          prime_margin=con.prime_margin,prime_offset=prime_offset,
+                          months_to_next_reset=months_to_next_reset,real_margin=real_margin)
+
             sch = calculate_schedule(**kwargs)
+
             max_payment_in_all_mortage = max([i[2] for i in sch])
             pr, it, idx = summarize_schedule(sch)
             total_cost = pr + it + idx
@@ -1218,12 +1291,11 @@ def generate_candidate_mixtures(
                     freq_rate_change=int(freq),
                     cost_per_unit=float(cost_per_unit),
                     pmt1_per_unit=float(pmt1_per_unit),
-                    cost_per_unit_norm = 0.0,
-                    pmt1_per_unit_norm =  0.0,
-                    eff =  0.0,
-                    eff_dis =  0.0,
                     max_payment_in_all_mortage=max_payment_in_all_mortage,
-                    original_principal=original_principal
+                    original_principal=original_principal,
+                    prime_offset=prime_offset,
+                    months_to_next_reset = months_to_next_reset, 
+                    real_margin = real_margin, 
                 ))
 
         
@@ -1479,14 +1551,14 @@ def _solve_lp(
             "type": o.rate_type,
             "months": o.months,
             "rate": o.annual_rate,
-            "cost": o.cost_per_unit,
-            "pmt1": o.pmt1_per_unit,
             "base_norm": base_norm.get(o.key, 0),
             "pmt1_norm": pmt1_norm.get(o.key, 0),
             "discount": d_val,
             "eff_cost": eff_cost.get(o.key, 0),
             "selected": False,
-            "amount": 0.0
+            "amount": 0.0,
+            "cost": o.cost_per_unit,
+            "pmt1": o.pmt1_per_unit,
         }
         debug_payload["candidates"].append(c_info)
         cand_map[o.key] = c_info
@@ -1523,8 +1595,6 @@ def optimize_mortgage(
     sensitivity: str ,
     prepay_window_key:str,
     durations_months: Optional[List[int]] ,
-    bank_of_israel_rate: float ,
-    prime_margin: float ,
     objective_mode: str,
     alpha: float,
     max_monthly_payment: float,
@@ -1542,12 +1612,9 @@ def optimize_mortgage(
     
     loan_pct_bucket = ltv_input # כבר כתוית ("35%"/"50%"...)
     
-    rate_provider = _make_anchor_rate_provider(bank_of_israel_rate, prime_margin, loan_pct_bucket)
-    # מועמדים – תמיד מהקטלוג הפנימי בלבד
-    #import pdb;pdb.set_trace()
+    
     options = generate_candidate_mixtures(
         durations_months,
-        rate_provider,
         ref_principal=float(loan_amount),
         loan_pct_bucket=loan_pct_bucket,
         routes_data_ori = routes_data_ori
@@ -1559,6 +1626,7 @@ def optimize_mortgage(
     alloc = None
     debug_info = None
     print("len(options):", len(options))
+    #import pdb;pdb.set_trace()
     alloc, debug_info = _solve_lp(
         options, loan_amount,
         derived["min_fixed_share"], derived["max_variable_share"],
@@ -1573,6 +1641,7 @@ def optimize_mortgage(
     # הרכבת תוצאה
     opt_by_key = {o.key: o for o in options}
     selected: List[Dict] = []
+    
     final_allocations = [] # List to store rounded allocations
     total_interest = 0.0
     total_indexation = 0.0
@@ -1607,21 +1676,11 @@ def optimize_mortgage(
             schedule_type=o.schedule_type,
             rate_type=o.rate_type,
             freq_rate_change=int(o.freq_rate_change),
+            prime_offset=o.prime_offset,
+            months_to_next_reset = o.months_to_next_reset, 
+            real_margin = o.real_margin, 
+            
         )
-
-        # --- Global Manual Interest Increase Check ---
-        # If set in config, boost the rate multiplicatively
-        if getattr(con, 'manual_interest_increase', 0.0) > 0:
-            boost_factor = 1 + (con.manual_interest_increase / 100.0)
-            kwargs['annual_rate'] = kwargs['annual_rate'] * boost_factor
-
-        if o.rate_type == "פריים":
-            if "ORI" in o.key:
-                prime_offset =  o.annual_rate - (con.prime_margin + con.bank_of_israel_rate)
-            else: 
-                prime_offset = con.LOAN_ADJ_RULES["Prime"][loan_pct_bucket] + con.SPREADS['Prime']
-            kwargs["prime_margin"] = con.prime_margin   
-            kwargs["prime_offset"] = prime_offset
 
         sch = calculate_schedule(**kwargs)
         pr, it, idx = summarize_schedule(sch)
@@ -1667,41 +1726,39 @@ if 1:
 
 def create_4_candidate_mortages(raw_PDF_tables,capital_allocation):
     mortgage_route = create_total_months(create_interest_type(raw_PDF_tables))
-    routes_data, update_data, non_indx_data, optimal_data = [], [], [], []
+    # routes_data2 = routes_data_only_loan_value_and_loan_value_inflation
+    routes_data, routes_data2,update_data, non_indx_data, optimal_data = [], [], [], [],[]
     loan_amount, first_payment, max_months = 0, 0, 0
-    clac_rate_int = InterestRateCalculator()
     # ------------------
     for i, rec in mortgage_route.items():
-        #print(rec)
-        loan_amount += rec['Payoff_Amount']# was Payoff_remind
-        max_months = max(max_months, rec['total_months_Remained'])
-        ### current
-        
+
+        ### current with all fees and intersets
         if 1:
+            max_months = max(max_months, rec['total_months_Remained'])
+            rec_amount = rec['loan_value'] + rec['loan_value_inflation'] + rec['loan_value_interest'] + rec['fee_differences'] 
+            loan_amount += rec_amount
             months_to_next_reset = rec.get('months_to_next_reset', 0) or 0
             rate_type = rec.get('current_interest_type')
-            #import pdb;pdb.set_trace()
+            
             #months_to_next_reset = 0
             sch = calculate_schedule(
-                rec['Payoff_Amount'],# was Payoff_remind
+                rec_amount,
                 rec['total_months_Remained'],
                 rec['Nominal_Interest_Rate_Date_of_Letter'], 
                 rec['Loan_Repayment_Method'], 
                 rec['current_interest_type'],
                 rec['Interest_Rate_Change_Frequency_in_Months'],
                 prime_margin=con.prime_margin, 
-                prime_offset=rec['Nominal_Interest_Rate_Date_of_Letter'] - (con.bank_of_israel_rate + con.prime_margin) if rate_type == 'פריים' else 0,
+                prime_offset=rec['addition_to_interest'],
                 months_to_next_reset=months_to_next_reset,
+                real_margin = rec['real_margin'],
             )
-            print('current current current')
-            prime_offset_temp=rec['Nominal_Interest_Rate_Date_of_Letter'] - (con.bank_of_israel_rate + con.prime_margin) if rate_type == 'פריים' else 0
-            print(rec['Payoff_Amount'], rec['total_months_Remained'],rec['Nominal_Interest_Rate_Date_of_Letter'], rec['Loan_Repayment_Method'], rec['current_interest_type'],rec['Interest_Rate_Change_Frequency_in_Months'],prime_offset_temp,months_to_next_reset)
             # סיכום עבור כל מסלול
             P,I,K = summarize_schedule(sch)
 
             routes_data.append([{
                 "מסלול": rate_type,
-                "סכום": rec['Payoff_Amount'],# was Payoff_remind
+                "סכום": rec_amount,
                 "תקופה (חודשים)": rec['total_months_Remained'],
                 "ריבית": rec['Nominal_Interest_Rate_Date_of_Letter'],
                 "החזר ראשון": round(sch[0][2],0),
@@ -1710,7 +1767,10 @@ def create_4_candidate_mortages(raw_PDF_tables,capital_allocation):
                 'סך כל התשלומים': P+I+K,
                 'החזר בשיא': max (ii[2] for ii in sch),
                 'סוג מסלול': rec['Loan_Repayment_Method'],
-                'internal_rate_of_return': rec['internal_rate_of_return']
+                'internal_rate_of_return': rec['internal_rate_of_return'],
+                "prime_offset" : rec['addition_to_interest'],
+                'real_margin' : rec['real_margin'],
+                'months_to_next_reset':months_to_next_reset,
 
                 },
                 sch])
@@ -1718,161 +1778,185 @@ def create_4_candidate_mortages(raw_PDF_tables,capital_allocation):
             
             first_payment += sch[0][2]
         
-        #print(routes_data)
-        ### update mortage ###
+        ### current with only loan_value and loan_value_inflation +loan_value_interest
         if 1:
-            #import pdb;pdb.set_trace()
+            rec_amount2 = rec['loan_value'] + rec['loan_value_inflation'] + rec['fee_differences']
+            #print(f'rec[loan_value]:{rec['loan_value']},rec[loan_value_inflation]:{rec['loan_value_inflation']},rec[loan_value_interest]:{rec['loan_value_interest']},rec[fee_differences]:{rec['fee_differences']}')
             months_to_next_reset = rec.get('months_to_next_reset', 0) or 0
             rate_type = rec.get('current_interest_type')
-            
-            # ------------------------------------------------------------------
-            # Smart Update Logic:
-            # אנחנו משווים בין:
-            # 1. הריבית הנוכחית שלך (current_rate)
-            # 2. ריבית השוק הנוכחית (market_rate_derived)
-            # ולוקחים את המינימום מבניהם לתרחיש "משכנתא מעודכנת".
-            
-            # שלב א: חישוב ריבית השוק (market_rate_derived)
-            try:
-                market_adj_rate = clac_rate_int.get_adjusted_rate(
-                    con.ANCHOR_TRACK_MAP[rate_type],
-                    capital_allocation,
-                    rec['Interest_Rate_Change_Frequency_in_Months'],
-                    rec['total_months_Remained'], 
-                )
-            except:
-                market_adj_rate=0
-                print('cant calc clac_rate_int.get_adjusted_rate, manualy rate = 0')
-                #import pdb; pdb.set_trace()
-            
-            if rate_type == 'פריים':
-                # עבור פריים: ריבית שוק = פריים בנק ישראל + מרווח רגולטורי/שוק
-                market_base_prime = clac_rate_int.prime_rate
-                market_prime_spread = clac_rate_int.Rules_loan_percentage["Prime"][capital_allocation] + clac_rate_int.Spread['Prime']
-                market_rate_derived = market_base_prime + market_prime_spread
-            else:
-                # עבור שאר המסלולים: מה שמגיע מהמחשבון
-                market_rate_derived = market_adj_rate
-
-            # שלב ב: שליפת הריבית הנוכחית של המשתמש
-            user_current_rate = rec['Nominal_Interest_Rate_Date_of_Letter']
-
-            # שלב ג: בחירת הריבית הטובה מבין השתיים
-            if user_current_rate < market_rate_derived:
-                # הריבית המקורית טובה יותר -> נשארים איתה
-                final_update_rate = user_current_rate
-                is_user_rate_kept = True
-            else:
-                # ריבית השוק טובה יותר (או שווה) -> מעדכנים לשוק
-                final_update_rate = market_rate_derived
-                is_user_rate_kept = False
-
-            # שלב ד: חישוב Prime Offset (רלוונטי רק לפריים)
-            if rate_type == 'פריים':
-                if is_user_rate_kept:
-                    # שומרים על המרווח המקורי
-                    # חישוב: ריבית משתמש פחות פריים בסיס של היום (הנחה: הפריים המצוטט הוא נכון להיום)
-                    # הערה: אם Nominal_Interest_Rate_Date_of_Letter היא היסטורית, זה עלול להיות לא מדויק,
-                    # אבל זו האינדיקציה הכי טובה ל"כמה המשתמש משלם היום".
-                    # נניח ש-Nominal... היא הריבית האבסולוטית העדכנית.
-                    current_spread = user_current_rate - (con.bank_of_israel_rate + con.prime_margin)
-                    prime_offset = current_spread
-                else:
-                    # לוקחים מרווח שוק
-                    prime_offset = market_prime_spread
-            else:
-                prime_offset = 0 # לא בשימוש במסלולים אחרים
-            
-            # עדכון המשתנה update_rate לשימוש בהמשך (אם יש תלויות אחרות בקוד)
-            update_rate = final_update_rate
-                
             sch = calculate_schedule(
-                rec['Payoff_Amount'],# was Payoff_remind 
-                rec['total_months_Remained'],
-                update_rate,
-                rec['Loan_Repayment_Method'], 
-                rec['current_interest_type'],
-                rec['Interest_Rate_Change_Frequency_in_Months'],
-                prime_margin= con.prime_margin, #1.5, 
-                prime_offset=prime_offset,
-                months_to_next_reset=months_to_next_reset
-            )
-            # סיכום עבור כל מסלול
-            P,I,K = summarize_schedule(sch)
-            update_data.append([{
-                "מסלול": rate_type,
-                "סכום": rec['Payoff_Amount'],# was Payoff_remind
-                "תקופה (חודשים)": rec['total_months_Remained'],
-                "ריבית": update_rate,
-                "החזר ראשון": round(sch[0][2],0),
-                "תדירות שינוי": rec['Interest_Rate_Change_Frequency_in_Months'],
-                "סה״כ ריבית והצמדה": I+K,
-                'סך כל התשלומים': P+I+K,
-                'החזר בשיא': max (ii[2] for ii in sch),
-                'סוג מסלול': rec['Loan_Repayment_Method']},
-                sch])
-            
-        ### non-indx data ###
-        if 1:
-            rate_type = rec.get('current_interest_type')
-            months_to_next_reset = rec.get('months_to_next_reset', 0) or 0
-            ori_rate = rec['Nominal_Interest_Rate_Date_of_Letter']
-
-            if rate_type not in ['מצ','קצ']:
-                sch = calculate_schedule(
-                rec['Payoff_Amount'],# was Payoff_remind
+                rec_amount2,
                 rec['total_months_Remained'],
                 rec['Nominal_Interest_Rate_Date_of_Letter'], 
                 rec['Loan_Repayment_Method'], 
                 rec['current_interest_type'],
                 rec['Interest_Rate_Change_Frequency_in_Months'],
                 prime_margin=con.prime_margin, 
-                prime_offset=rec['Nominal_Interest_Rate_Date_of_Letter'] - (con.prime_margin + con.bank_of_israel_rate),
+                prime_offset=rec['addition_to_interest'],
                 months_to_next_reset=months_to_next_reset,
+                real_margin = rec['real_margin'],
+            )
+            
+            P,I,K = summarize_schedule(sch)
+
+            routes_data2.append([{
+                "מסלול": rate_type,
+                "סכום": rec_amount2,
+                "תקופה (חודשים)": rec['total_months_Remained'],
+                "ריבית": rec['Nominal_Interest_Rate_Date_of_Letter'],
+                "החזר ראשון": round(sch[0][2],0),
+                "תדירות שינוי": rec['Interest_Rate_Change_Frequency_in_Months'],
+                "סה״כ ריבית והצמדה": I+K,
+                'סך כל התשלומים': P+I+K,
+                'החזר בשיא': max (ii[2] for ii in sch),
+                'סוג מסלול': rec['Loan_Repayment_Method'],
+                'internal_rate_of_return': rec['internal_rate_of_return'],
+                "prime_offset" : rec['addition_to_interest'],
+                'real_margin' : rec['real_margin'],
+                'months_to_next_reset':months_to_next_reset,
+                },
+                sch])
+                
+        ### update mortage ###
+        if 1:
+            
+            months_to_next_reset = rec.get('months_to_next_reset', 0) or 0
+            if months_to_next_reset == 0 :
+                months_to_next_reset = rec['Interest_Rate_Change_Frequency_in_Months']
+            
+            rate_type = rec.get('current_interest_type')
+            
+            try:
+                init_rate_dic = calc.get_adjusted_rate(
+                    con.ANCHOR_TRACK_MAP[rate_type],
+                    capital_allocation,
+                    rec['Interest_Rate_Change_Frequency_in_Months'],
+                    rec['total_months_Remained'], 
                 )
+                init_ogen,init_tosefet,init_sum_rate = init_rate_dic['ogen'],init_rate_dic['tosefet'],init_rate_dic['sum_rate']
+            except:
+                init_ogen,init_tosefet,init_sum_rate = 0,0,0
+                print('cant calc clac_rate_int.get_adjusted_rate, manualy rate = 0')
+                #import pdb; pdb.set_trace()
+            
+            user_current_rate = rec['Nominal_Interest_Rate_Date_of_Letter']
+
+            
+            
+            if rate_type == 'זכאות': # אנחנו לא נוגעים כרגע בריבית מסלולי זכאות 
+                market_rate_derived = user_current_rate
+            else:
+                market_rate_derived = init_sum_rate
+            
+            if user_current_rate <= market_rate_derived:
+                # הריבית המקורית טובה יותר -> נשארים איתה
+                final_update_rate = user_current_rate
+                real_margin = rec['real_margin']
+                prime_offset = rec['prime_offset']
+                #import pdb;pdb.set_trace()
+            else:
+                # ריבית השוק טובה יותר (או שווה) -> מעדכנים לשוק
+                final_update_rate = market_rate_derived
+                months_to_next_reset=rec['Interest_Rate_Change_Frequency_in_Months']
+                real_margin = init_tosefet
+                prime_offset = init_tosefet
+
+                
+            sch = calculate_schedule(
+                rec_amount,#rec['Payoff_Amount'],# was Payoff_remind 
+                rec['total_months_Remained'],
+                final_update_rate,
+                rec['Loan_Repayment_Method'], 
+                rec['current_interest_type'],
+                rec['Interest_Rate_Change_Frequency_in_Months'],
+                prime_margin= con.prime_margin,  
+                prime_offset=prime_offset,
+                months_to_next_reset=months_to_next_reset,
+                real_margin = real_margin,
+                
+            )
+            # סיכום עבור כל מסלול
+            P,I,K = summarize_schedule(sch)
+            update_data.append([{
+                "מסלול": rate_type,
+                "סכום": rec_amount,
+                "תקופה (חודשים)": rec['total_months_Remained'],
+                "ריבית": final_update_rate,
+                "החזר ראשון": round(sch[0][2],0),
+                "תדירות שינוי": rec['Interest_Rate_Change_Frequency_in_Months'],
+                "סה״כ ריבית והצמדה": I+K,
+                'סך כל התשלומים': P+I+K,
+                'החזר בשיא': max (ii[2] for ii in sch),
+                'סוג מסלול': rec['Loan_Repayment_Method'],
+                "prime_offset" : prime_offset,
+                'real_margin':real_margin
+                },
+                sch])
+            
+        ### non-indx data ###
+        if 1:
+            rate_type = rec.get('current_interest_type')
+            months_to_next_reset = rec.get('months_to_next_reset', 0) or 0
+            if months_to_next_reset == 0 :
+                months_to_next_reset = rec['Interest_Rate_Change_Frequency_in_Months']
+            
+            ori_rate = rec['Nominal_Interest_Rate_Date_of_Letter']
+
+            if rate_type not in ['מצ','קצ']:
+                sch = calculate_schedule(
+                rec_amount,
+                rec['total_months_Remained'],
+                rec['Nominal_Interest_Rate_Date_of_Letter'], 
+                rec['Loan_Repayment_Method'], 
+                rec['current_interest_type'],
+                rec['Interest_Rate_Change_Frequency_in_Months'],
+                prime_margin=con.prime_margin, 
+                prime_offset=rec['prime_offset'],
+                months_to_next_reset=months_to_next_reset,
+                real_margin = rec['real_margin'],
+                )
+
                 final_rate_type = rate_type
                 final_rate = ori_rate
             else:
             
                 if rate_type == 'מצ':
                     rate_type_update = "מלצ"
-                    
+                       
                 elif rate_type == 'קצ':
                     rate_type_update = "קלצ"
                 
-                update_rate = clac_rate_int.get_adjusted_rate(
+                init_rate_dic = calc.get_adjusted_rate(
                         con.ANCHOR_TRACK_MAP[rate_type_update],
                         capital_allocation,
                         rec['Interest_Rate_Change_Frequency_in_Months'],
                         rec['total_months_Remained'], 
                     )
-                print('^^^^^^^^^^^^^^^^')
-                print(f'rate_type:{rate_type},ori_rate:{ori_rate}')
-                print(f'rate_type:{rate_type_update},update_rate:{update_rate}')
+                init_ogen,init_tosefet,init_sum_rate = init_rate_dic['ogen'],init_rate_dic['tosefet'],init_rate_dic['sum_rate']
+                
+                
                 #if update_rate<ori_rate :
-                final_rate = update_rate
+                final_rate = init_sum_rate
                 final_rate_type = rate_type_update
                 
-                #else:
-                #    final_rate = ori_rate
-                #    final_rate_type = rate_type
-                       
+                months_to_next_reset = rec['Interest_Rate_Change_Frequency_in_Months']
                 sch = calculate_schedule(
-                    rec['Payoff_Amount'],# was Payoff_remind
+                    rec_amount,#rec['Payoff_Amount'],# was Payoff_remind
                     rec['total_months_Remained'],
                     final_rate, 
                     rec['Loan_Repayment_Method'], 
                     final_rate_type,
                     rec['Interest_Rate_Change_Frequency_in_Months'],
                     prime_margin=con.prime_margin, #1.5, 
-                    prime_offset=rec.get('prime_offset', 0) if final_rate_type == 'פריים' else 0,
-                    months_to_next_reset=months_to_next_reset
+                    prime_offset=init_tosefet,
+                    months_to_next_reset=months_to_next_reset,
+                    real_margin = init_tosefet,
                 )
             # סיכום עבור כל מסלול
             P,I,K = summarize_schedule(sch)
             non_indx_data.append([
                 {"מסלול": final_rate_type,
-                "סכום": rec['Payoff_Amount'],# was Payoff_remind
+                "סכום": rec_amount,#rec['Payoff_Amount'],# was Payoff_remind
                 "תקופה (חודשים)": rec['total_months_Remained'],
                 "ריבית": final_rate,
                 "החזר ראשון": round(sch[0][2],0),
@@ -1880,12 +1964,14 @@ def create_4_candidate_mortages(raw_PDF_tables,capital_allocation):
                 "סה״כ ריבית והצמדה": I+K,
                 'סך כל התשלומים': P+I+K,
                 'החזר בשיא': max (ii[2] for ii in sch),
-                'סוג מסלול': rec['Loan_Repayment_Method']},
+                'סוג מסלול': rec['Loan_Repayment_Method'],
+                'prime_offset' :prime_offset,
+                'real_margin':real_margin,
+
+                },
                 sch])
         
-    # --- אופטימיזציה ---
-    #sol_tracks, totals, err = run_optimize(loan_amount, first_payment, max_months,capital_allocation,routes_data)
-    
+    #import pdb;pdb.set_trace()
     sol_tracks, totals, err =  optimize_mortgage(
         float(loan_amount),
         capital_allocation,
@@ -1893,8 +1979,6 @@ def create_4_candidate_mortages(raw_PDF_tables,capital_allocation):
         con.sensitivity,
         con.prepay_window_key,
         con.durations_months(max_months),
-        con.bank_of_israel_rate,
-        con.prime_margin,
         con.objective_mode,
         con.alpha,
         first_payment, 
@@ -1902,7 +1986,7 @@ def create_4_candidate_mortages(raw_PDF_tables,capital_allocation):
         )
     
     if not sol_tracks:
-        return (routes_data, update_data, non_indx_data,routes_data)
+        return (routes_data,routes_data2, update_data, non_indx_data,routes_data)
     
     for track in sol_tracks:
         principal = track['principal']
@@ -1927,10 +2011,10 @@ def create_4_candidate_mortages(raw_PDF_tables,capital_allocation):
             sch])
     
     # ------------------
-    return (routes_data, update_data, non_indx_data, optimal_data)
+    return (routes_data,routes_data2, update_data, non_indx_data, optimal_data)
 
 def find_best_mortage(raw_PDF_tables,capital_allocation):
-    ori_routes_mortage, update_mortage, non_indx_mortage, optimal_mortage = create_4_candidate_mortages(raw_PDF_tables,capital_allocation)
+    ori_routes_mortage,ori_routes_mortage2, update_mortage, non_indx_mortage, optimal_mortage = create_4_candidate_mortages(raw_PDF_tables,capital_allocation)
     #print(ori_routes_mortage)
     #import pdb ; pdb.set_trace()
     total_payments_ori = sum([root['סך כל התשלומים'] for root,ss in ori_routes_mortage])
@@ -1987,7 +2071,7 @@ def find_best_mortage(raw_PDF_tables,capital_allocation):
         best_candidate = best_internal
 
     
-    return best_candidate,ori_routes_mortage, update_mortage, non_indx_mortage, optimal_mortage
+    return best_candidate,ori_routes_mortage,ori_routes_mortage2, update_mortage, non_indx_mortage, optimal_mortage
 #
 def weighted_avg_rate_fun(group):
     if not group:
@@ -2145,7 +2229,9 @@ def find_relevant_ogen(file_path,target_date,freq_in_months):
     closest_row = df_past.loc[df_past['date_dt'].idxmax()]
     print('take ogen data from: ')
     print(closest_row)
-    return closest_row[freq_in_months//12]
+    print(f'take year of: {freq_in_months//12}')
+    return closest_row[str(freq_in_months//12)]
+
 
 
 def convert_api_json_to_loan_tracks(api_json: dict) -> dict:
@@ -2153,87 +2239,118 @@ def convert_api_json_to_loan_tracks(api_json: dict) -> dict:
     ממפה את מבנה ה־JSON החדש (עם data/tracks) לפורמט loan_tracks
     שבו השתמשת עד עכשיו.
     """
+    #data = api_json.get("data", {})
+    #date_balance_str = data.get("date_balance")
+    #latter_date = _parse_date_or_nat(date_balance_str)
+
+    #loan_tracks: dict[int, dict] = {}
     data = api_json.get("data", {})
     date_balance_str = data.get("date_balance")
     latter_date = _parse_date_or_nat(date_balance_str)
 
     loan_tracks: dict[int, dict] = {}
 
-    for track in data.get("tracks", []):
-        loan_tracks[track['internal_id']] = {}
+    # --- תיקון: תמיכה במילון או רשימה ---
+    tracks_source = data.get("tracks", [])
+    if isinstance(tracks_source, dict):
+        tracks_list = tracks_source.values()
+    else:
+        tracks_list = tracks_source
 
-        loan_tracks[track['internal_id']]['Loan_number'] = track['track_bank_number']
-        loan_tracks[track['internal_id']]['Loan_Purpose'] = track['loan_purpose']
-        loan_tracks[track['internal_id']]['Original_Loan_Amount'] = float(track['original_loan_value'])
-        loan_tracks[track['internal_id']]['Expected_Last_Payment_Date'] = _parse_date_or_nat(track['date_end'])
-        loan_tracks[track['internal_id']]['Loan_Type'] = 'קנב' # need to change - Rachel2Blame
-        loan_tracks[track['internal_id']]['Loan_Repayment_Method'] = _map_loan_repayment_method(int(track['loan_board']))
-        loan_tracks[track['internal_id']]['Interest_Type'] = _map_interest_type_from_loan_type(int(track['loan_type']))
-        try:
-            loan_tracks[track['internal_id']]['Interest_Rate_Change_Frequency_in_Months'] = int(track['date_change_frequency'])
-        except:
-            loan_tracks[track['internal_id']]['Interest_Rate_Change_Frequency_in_Months'] = None
-        if loan_tracks[track['internal_id']]['Interest_Type'] == "פריים":
-            loan_tracks[track['internal_id']]['Interest_Rate_Change_Frequency_in_Months'] = 1
+    for track in tracks_list:
 
-        loan_tracks[track['internal_id']]['latter_date_object'] = latter_date
-        loan_tracks[track['internal_id']]['Nominal_Interest_Rate_Date_of_Letter'] = float(track['loan_interest'])
-
-
-        freq = loan_tracks[track['internal_id']]['Interest_Rate_Change_Frequency_in_Months']
-        next_change_date = _parse_date_or_nat(track['date_change_interest'])
-        today = date.today()
-        #
-        if next_change_date and freq > 1 and next_change_date.date() <= today: # זה אומר שהריבית היא משתנה 
+        if track['is_active']:
             
-            update_ancor_date = next_change_date
-            while next_change_date.date() <= today:
-                next_change_date += relativedelta(months=freq)
-                if next_change_date.date() <= today:
-                    update_ancor_date += relativedelta(months=freq)
+            loan_tracks[track['internal_id']] = {}
+            loan_tracks[track['internal_id']]['Loan_number'] = track['track_bank_number']
+            loan_tracks[track['internal_id']]['Loan_Purpose'] = track['loan_purpose']
+            loan_tracks[track['internal_id']]['Original_Loan_Amount'] = float(track['original_loan_value'])
+            loan_tracks[track['internal_id']]['Expected_Last_Payment_Date'] = _parse_date_or_nat(track['date_end'])
+            loan_tracks[track['internal_id']]['Loan_Type'] = 'קנב' # need to change - Rachel2Blame
+            loan_tracks[track['internal_id']]['Loan_Repayment_Method'] = _map_loan_repayment_method(int(track['loan_board']))
+            Interest_Type = _map_interest_type_from_loan_type(int(track['loan_type']))
+            loan_tracks[track['internal_id']]['Interest_Type'] = Interest_Type
             
-            addition_to_interest = float(track['addition_to_interest']) # זה לא משתנה
+
+            loan_tracks[track['internal_id']]['latter_date_object'] = latter_date
             
-            #XLSX_PATH_NOMINAL,XLSX_PATH_REAL
-            if loan_tracks[track['internal_id']]['Interest_Type'] == "מצ":
-                new_ogen = find_relevant_ogen(XLSX_PATH_REAL,update_ancor_date,freq)
-            elif loan_tracks[track['internal_id']]['Interest_Type'] == "מלצ":
-                new_ogen = find_relevant_ogen(XLSX_PATH_NOMINAL,update_ancor_date,freq)
-            elif loan_tracks[track['internal_id']]['Interest_Type'] == "מקמ":
-                new_ogen = MAKAM_ANCOR
+            loan_interest = float(track['loan_interest'])
+            
+            
+            addition_to_interest=float(track.get('addition_to_interest', 0.0) or 0.0)
+            loan_tracks[track['internal_id']]['addition_to_interest'] = addition_to_interest
+            
+            
+            
+            
+            if int(track['loan_type'])  in [3,5,9]:
+                loan_tracks[track['internal_id']]['Indexation_Basis'] = True
+            else:
+                loan_tracks[track['internal_id']]['Indexation_Basis'] = False
+            
+            loan_tracks[track['internal_id']]['loan_value'] = float(track['loan_value'])
+            loan_tracks[track['internal_id']]['loan_value_inflation'] = float(track['loan_value_inflation'])
+            loan_tracks[track['internal_id']]['loan_value_interest'] = float(track['loan_value_interest'])
+            loan_tracks[track['internal_id']]['fee_differences'] = float(track['fee_differences'])
+            loan_tracks[track['internal_id']]['First_Payment_Date'] = _parse_date_or_nat(track['date_end']) - pd.DateOffset(months=int(track['loan_years']))
+            loan_tracks[track['internal_id']]['internal_rate_of_return'] = float(track.get('internal_rate_of_return', 0.0))
+            loan_tracks[track['internal_id']]['prime_offset'] = addition_to_interest
+            loan_tracks[track['internal_id']]['loan_months']= int(track['loan_years'])
+
             
             try:
-                loan_tracks[track['internal_id']]['Nominal_Interest_Rate_Date_of_Letter'] = addition_to_interest+new_ogen
+                freq = int(track['date_change_frequency'])
             except:
+                freq= None
+            if Interest_Type == "פריים":
+                freq = 1
+                
+            loan_tracks[track['internal_id']]['Interest_Rate_Change_Frequency_in_Months'] = freq
+            loan_tracks[track['internal_id']]['real_margin'] = addition_to_interest
+            next_change_date = _parse_date_or_nat(track['date_change_interest'])
+            today = date.today()
+            current_ogen = loan_interest - addition_to_interest
+            
+            real_margin = 0
+            if next_change_date and freq > 1 and next_change_date.date() <= today: #  הריבית משתנה ועברתי את תאריך השינוי הראשון
+                update_ancor_date = next_change_date
+                while next_change_date.date() <= today:
+                    next_change_date += relativedelta(months=freq)
+                    if next_change_date.date() <= today:
+                        update_ancor_date += relativedelta(months=freq)
+
+                if Interest_Type == "מצ":
+                    next_ogen = find_relevant_ogen(XLSX_PATH_REAL,update_ancor_date,freq)
+                elif Interest_Type == "מלצ":
+                    next_ogen = find_relevant_ogen(XLSX_PATH_NOMINAL,update_ancor_date,freq)
+                elif Interest_Type == "מקמ":
+                    next_ogen = MAKAM_ANCHOR
+                real_margin = 0
+                loan_interest = next_ogen + addition_to_interest
+                current_ogen =  next_ogen
+            
+            if next_change_date and (freq > 1) and (next_change_date.date() > today) and (data.get('bank_title') in ["מזרחי טפחות", "מזרחי", "טפחות"]):# עוד לא עבר תאריך השינוי 
+                last_change_date = next_change_date - relativedelta(months=freq)
+                if Interest_Type == "מצ":
+                    next_ogen = find_relevant_ogen(XLSX_PATH_REAL,next_change_date,freq)
+                elif Interest_Type == "מלצ":
+                    next_ogen = find_relevant_ogen(XLSX_PATH_NOMINAL,next_change_date,freq)
+                elif Interest_Type == "מקמ":
+                    next_ogen = MAKAM_ANCHOR
+                
                 #import pdb;pdb.set_trace()
-                print('erorr in read smart json - canot update the Nominal_Interest_Rate_Date_of_Letter')
-            # rate = מלצ או מלצ
-             # הריבית היא או מצ או מלצ 
-             # אם היה עדכון , נלך לעדכון במועד האחרון או נלך לעדכון בחודש העדכון שהיה? - לשאול את יצחק
-             # find_and_update_rate 
-             # last_update_date = (next_change_date-=relativedelta(months=freq-1))
-             # real_01-02-2026,nominal_01-02-2026 בהתאם לריבית הקיימת
-             # 
+                last_ogen = find_relevant_ogen(XLSX_PATH_REAL,last_change_date,freq)
+                real_margin = loan_interest-last_ogen 
+                loan_tracks[track['internal_id']]['real_margin'] = real_margin
+                #next_ogen - current_ogen
+                #real_margin = (next_ogen ) - loan_interest
 
-        loan_tracks[track['internal_id']]['Next_Interest_Rate_Change_Date'] = next_change_date
-        #import pdb;pdb.set_trace()
-        if int(track['loan_type'])  in [3,5,9]:
-            loan_tracks[track['internal_id']]['Indexation_Basis'] = True
-        else:
-            loan_tracks[track['internal_id']]['Indexation_Basis'] = False
-        loan_tracks[track['internal_id']]['principal_remind'] = float(track['loan_value'])
-        loan_tracks[track['internal_id']]['Principal_Indexation'] = float(track['loan_value_inflation'])
-        loan_tracks[track['internal_id']]['Prepayment_Fee'] = float(track['fee_differences'])
-        
-        loan_tracks[track['internal_id']]['Payoff_remind'] = float(track['loan_value'])+float(track['loan_value_inflation'])+float(track['fee_differences'])
-        
-        loan_tracks[track['internal_id']]['Payoff_Amount'] = float(track['loan_value_interest'])+loan_tracks[track['internal_id']]['Payoff_remind']
+                
+            loan_tracks[track['internal_id']]['Next_Interest_Rate_Change_Date'] = next_change_date
+            loan_tracks[track['internal_id']]['ogen'] = current_ogen
+            loan_tracks[track['internal_id']]['Nominal_Interest_Rate_Date_of_Letter'] = loan_interest
+            
 
-        loan_tracks[track['internal_id']]['First_Payment_Date'] = _parse_date_or_nat(track['date_end']) - pd.DateOffset(months=int(track['loan_years']))
-        loan_tracks[track['internal_id']]['internal_rate_of_return'] = float(track['internal_rate_of_return'])# internal_rate_of_return
-    #print('@@@@@@@@@@@')
-    #print(loan_tracks)
-    #print('@@@@@@@@@@@')
     return loan_tracks
 
 def convert_api_json_to_first_loan_tracks(api_json: dict) -> dict:

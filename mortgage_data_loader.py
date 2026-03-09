@@ -69,7 +69,8 @@ def load_boi_data():
                     real_anchor[key] = float(value)
                 elif "ZND" in code:
                     nominal_anchor[key] = float(value)
-
+        #print(nominal_anchor)
+        #print(real_anchor)
         # === נתוני מק"ם ===
         url_makam = (
             "https://edge.boi.gov.il/FusionEdgeServer/sdmx/v2/data/dataflow/"
@@ -101,6 +102,7 @@ def load_boi_data():
         return boi_data
 
     except Exception as e:
+        print(e)
         st.warning(f"⚠️ שרת בנק ישראל לא זמין. מחפש נתונים שמורים...")
         
         # חיפוש כל קבצי ה-JSON בתיקייה
@@ -198,6 +200,59 @@ def fetch_latest_boi_excels():
 
         st.success(f"✅ נטענו קבצי גיבוי מקומיים.")
         return fallback_paths["model"], fallback_paths["nominal"], fallback_paths["real"]
+
+def load_makam_ancor():
+    base_dir = Path(__file__).parent.resolve()
+    backup_dir = base_dir / "last_boi_anchors"
+    backup_dir.mkdir(parents=True, exist_ok=True)  # וידוא שהתיקייה קיימת
+    
+    # נתיב לקובץ של היום ספציפית
+    today_str = datetime.now().strftime("%d-%m-%Y")
+    backup_makam_path = backup_dir / f"last_makam_anchor_{today_str}.json"
+    if os.path.exists(backup_makam_path):
+        with open(backup_makam_path, "r", encoding="utf-8") as f:
+                makam_anchor = json.load(f)
+                #st.info(f"✅ נטען מקמ מתאריך: {data.get('last_updated', 'לא ידוע')}")
+                return makam_anchor
+
+    try:
+        url_makam = (
+                "https://edge.boi.gov.il/FusionEdgeServer/sdmx/v2/data/dataflow/"
+                "BOI.STATISTICS/SECDWH/1.0/"
+                "DWH_SRC_0351.D.YTM.GB_MK.BS114.NI._Z.M012.S121._Z._Z.W2.B08.C.AVG_W_MV?locale=he"
+            )
+        resp = requests.get(url_makam, timeout=30)
+        resp.raise_for_status()
+
+        root = ET.fromstring(resp.text)
+        data = [
+            (pd.to_datetime(obs.attrib.get("TIME_PERIOD")), float(obs.attrib.get("OBS_VALUE")))
+            for obs in root.iter("Obs") if obs.attrib.get("OBS_VALUE")
+        ]
+        df = pd.DataFrame(data, columns=["תאריך", "ערך"]).sort_values("תאריך")
+        makam_anchor = float(df["ערך"].iloc[-1])
+
+        with open(backup_makam_path, "w", encoding="utf-8") as f:
+            json.dump(makam_anchor, f, ensure_ascii=False, indent=4)
+
+        return makam_anchor
+    
+    except Exception as e: 
+        print(e)
+        st.warning(f"⚠️ שרת בנק ישראל לא זמין. מחפש ערך מקמ שמור...")
+        
+        # חיפוש כל קבצי ה-JSON בתיקייה
+        backup_files = list(backup_dir.glob("*.json"))
+        if backup_makam_path in backup_files:            
+            with open(backup_makam_path, "r", encoding="utf-8") as f:
+                makam_anchor = json.load(f)
+                #st.info(f"✅ נטען מקמ מתאריך: {data.get('last_updated', 'לא ידוע')}")
+                return makam_anchor
+        else:
+            st.error("❌ לא נמצא קובץ גיבוי כלשהו למקמ במערכת.")
+            return None
+
+    
 # ================================================================
 #  קריאת נתונים מאקסל — WorkbookLoader & DataStore
 # ================================================================
@@ -225,6 +280,7 @@ def _to_decimal_if_needed(arr: np.ndarray) -> np.ndarray:
     if np.isfinite(med) and med > 1.0:
         return arr / 100.0
     return arr
+
 
 @dataclass
 class DataStore:
@@ -255,7 +311,8 @@ class WorkbookLoader:
         # סינון לפי תרחיש – ניקח רק "מדדי" או "קלנדרי"
         if con.SCENARIO_COL in df.columns:
             df = df[df[con.SCENARIO_COL].isin(["מדדי", "קלנדרי"])].copy()
-
+            #df = df[df[con.SCENARIO_COL].isin([con.SCENARIO])].copy()
+        #import pdb;pdb.set_trace()
 
         # ניסיון יצירת עמודת תאריך
         if "שנה" in df.columns and "חודש" in df.columns:
@@ -276,7 +333,10 @@ class WorkbookLoader:
                 df = df[df["תאריך"].notna()].copy()
 
         latest = df.sort_values("תאריך").iloc[-1] if ("תאריך" in df.columns and not df.empty) else df.iloc[-1]
+        #print('fffffffffffffffffffffffffffff')
         #print(latest)
+        #print('fffffffffffffffffffffffffffff')
+        #import pdb;pdb.set_trace()
         return latest
 
     def _extract_zero_series(self, latest_row: pd.Series, horizon: int) -> np.ndarray:
