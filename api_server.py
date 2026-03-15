@@ -10,7 +10,7 @@ from functions import (
 )
 import config as con
 
-
+# uvicorn api_server:app --reload
 app = FastAPI(title="Mortgage API Server")
 
 class MortgageEngine:
@@ -213,7 +213,7 @@ class MortgageEngine:
                 "Return_per_NIS": summary["total_repayment"] / total_loan_amount if total_loan_amount > 0 else 0, # originally "החזר לשקל"
                 "internal_rate_of_return":summary.get('internal_rate_of_return',0),
                 "First_Monthly_Payment_Diff": summary["first_payment"]- first_month_payment_ori, # originally "הפרש החזר חודשי ראשון"
-                "Average_Monthly_Savings": (summary["total_repayment"]-detailed_scenarios[labels[0]]["summary"]["total_repayment"])/len(scenario_detail["combined_graph"]["months"]), # originally "חיסכון חודשי ממוצע"
+                "Average_Monthly_Savings": (detailed_scenarios[labels[0]]["summary"]["total_repayment"]-summary["total_repayment"])/len(scenario_detail["combined_graph"]["months"]), # originally "חיסכון חודשי ממוצע"
                 "Saving_in_precentage":0 if i == 0 else (detailed_scenarios[labels[0]]["summary"]["total_repayment"]-summary["total_repayment"] )*100/detailed_scenarios[labels[0]]["summary"]["total_repayment"] ,
             })
             print("__________________________________")
@@ -300,7 +300,8 @@ class MortgageEngine:
                 "Interest": info.get("ריבית"), # originally "ריבית": info.get("ריבית")
                 "First_Payment": sch[0][2], # originally "החזר_ראשון": sch[0][2]
                 "Max_Payment": max(row[2] for row in sch), # originally "החזר_בשיא": max(row[2] for row in sch)
-                "Total_Interest_and_Indexation": i + k, # originally "סהכ_ריבית_והצמדה": i + k
+                "Total_Interest": i , # originally "סהכ_ריבית_והצמדה": i + k
+                "Total_Indexation": k ,
                 "Total_Repayment": p + i + k, # originally "סך_כל_התשלומים": p + i + k
                 'internal_rate_of_return': info.get('internal_rate_of_return',0),
                 "graph_arrays": _schedule_arrays(sch) # כל המערכים לגרפים של מסלול בודד
@@ -502,17 +503,17 @@ class MortgageEngine:
 
         # הגדרת הרכב שלושת הסלים
         baskets_config = {
-            "Uniform_Basket_1": [ # originally "סל אחיד 1"
-                quick_calc(principal, "קלצ", None, "Full_Fixed_Unlinked") # originally "קלצ מלא"
+            "Uniform_Basket_1": [ 
+                quick_calc(principal, "קלצ", None, "100% קל״צ") # originally "קלצ מלא"
             ],
             "Uniform_Basket_2": [ # originally "סל אחיד 2"
-                quick_calc(principal/3, "קלצ", None, "Fixed_Unlinked_(1/3)"), # originally "קלצ (1/3)"
-                quick_calc(principal/3, "פריים", 1, "Prime_(1/3)"), # originally "פריים (1/3)"
-                quick_calc(principal/3, "מצ", 60, "Variable_Linked_(1/3)") # originally "משתנה (1/3)"
+                quick_calc(principal/3, "קלצ", None, "33.3% קל״צ"), # originally "קלצ (1/3)"
+                quick_calc(principal/3, "פריים", 1, "33.3% פריים"), # originally "פריים (1/3)"
+                quick_calc(principal/3, "מצ", 60, "33.3 מ״צ") # originally "משתנה (1/3)"
             ],
             "Uniform_Basket_3": [ # originally "סל אחיד 3"
-                quick_calc(principal/2, "קלצ", None, "Fixed_Unlinked_(1/2)"), # originally "קלצ (1/2)"
-                quick_calc(principal/2, "פריים", 1, "Prime_(1/2)") # originally "פריים (1/2)"
+                quick_calc(principal/2, "קלצ", None, "50% קל״צ"), # originally "קלצ (1/2)"
+                quick_calc(principal/2, "פריים", 1, "50% פריים") # originally "פריים (1/2)"
             ]
         }
 

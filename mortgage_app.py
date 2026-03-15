@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 
-# /usr/local/bin/python3 -m streamlit run /Users/user/Desktop/BI/final_12/mortgage_app.py
+# /usr/local/bin/python3 -m streamlit run /Users/user/Desktop/BI/final_13/mortgage_app.py
 # ------------------------------ CONSTANTS & IMPORTS ------------------------------
 import io
 import re
@@ -623,7 +623,6 @@ with tab1:
             key="dl_total_xlsx"
         )
 
-
 with tab2:
     st.subheader("תמהיל אופטימלי ללקיחת משכנתא חדשה")
     mix = st.session_state.get("mix_tracks", [])
@@ -906,9 +905,9 @@ with tab3:
             pr_y, in_y, idx_y = [0.0]*years, [0.0]*years, [0.0]*years
             for m in range(max_len):
                 y = m // 12
-                pr_y[y] += total_principal_base[m]
-                in_y[y] += total_interest[m]
-                idx_y[y] += total_indexation[m]
+                pr_y[y] += total_principal_base[m]/12.
+                in_y[y] += total_interest[m]/12.
+                idx_y[y] += total_indexation[m]/12.
 
             fig_tot_br = go.Figure()
             fig_tot_br.add_trace(go.Bar(x=y_idx, y=pr_y, name="קרן", marker=dict(color='#2E86C1')))
