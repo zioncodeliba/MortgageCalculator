@@ -9,10 +9,31 @@ from functions import (
     find_best_mortage
 )
 import config as con
+from fastapi.responses import JSONResponse
 
+
+class RoundingJSONResponse(JSONResponse):
+    def render(self, content: any) -> bytes:
+        # פונקציית עזר שסורקת את הנתונים ומעגלת float
+        def round_floats(obj):
+            if isinstance(obj, float):
+                return round(obj, 2)
+            if isinstance(obj, dict):
+                return {k: round_floats(v) for k, v in obj.items()}
+            if isinstance(obj, list):
+                return [round_floats(x) for x in obj]
+            return obj
+
+        return json.dumps(
+            round_floats(content),
+            ensure_ascii=False,
+            allow_nan=False,
+            indent=None,
+            separators=(",", ":"),
+        ).encode("utf-8")
 # uvicorn api_server:app --reload
-app = FastAPI(title="Mortgage API Server")
-
+#app = FastAPI(title="Mortgage API Server")
+app = FastAPI(title="Mortgage API Server", default_response_class=RoundingJSONResponse)
 class MortgageEngine:
     def __init__(self):
         self.calculator = InterestRateCalculator()
@@ -203,7 +224,13 @@ class MortgageEngine:
             if label == "Current_Mortgage": # originally "משכנתא נוכחית"
                 first_month_payment_ori = summary["first_payment"]
                 total_pay_ori = summary["total_repayment"]
+            tracks = scenario_detail["tracks"]
+            len_tracks = len(tracks)
+            internal_rate_of_return = 0 
+            for track in tracks:
+                internal_rate_of_return+=track["internal_rate_of_return"]
 
+            internal_rate_of_return = internal_rate_of_return/ len_tracks   
             comparison_table.append({
                 "Scenario": label, # originally "תרחיש": label
                 "First_Monthly_Payment": summary["first_payment"], # originally "החזר חודשי ראשון": summary["first_payment"]
@@ -211,7 +238,7 @@ class MortgageEngine:
                 "Total_Repayment": summary["total_repayment"], # originally "סך הכל תשלומים": summary["total_repayment"]
                 "Savings_NIS": 0 if i == 0 else detailed_scenarios[labels[0]]["summary"]["total_repayment"]-summary["total_repayment"] , # originally "חיסכון ₪"
                 "Return_per_NIS": summary["total_repayment"] / total_loan_amount if total_loan_amount > 0 else 0, # originally "החזר לשקל"
-                "internal_rate_of_return":summary.get('internal_rate_of_return',0),
+                "internal_rate_of_return":internal_rate_of_return,#summary.get('internal_rate_of_return',0),
                 "First_Monthly_Payment_Diff": summary["first_payment"]- first_month_payment_ori, # originally "הפרש החזר חודשי ראשון"
                 "Average_Monthly_Savings": (detailed_scenarios[labels[0]]["summary"]["total_repayment"]-summary["total_repayment"])/len(scenario_detail["combined_graph"]["months"]), # originally "חיסכון חודשי ממוצע"
                 "Saving_in_precentage":0 if i == 0 else (detailed_scenarios[labels[0]]["summary"]["total_repayment"]-summary["total_repayment"] )*100/detailed_scenarios[labels[0]]["summary"]["total_repayment"] ,
