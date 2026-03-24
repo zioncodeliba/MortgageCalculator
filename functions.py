@@ -2383,7 +2383,17 @@ def convert_api_json_to_first_loan_tracks(api_json: dict) -> dict:
             temp['propose']= track['track_purpose']
         elif not purpose:
             temp['propose']= purpose
-        temp['high_month_payment'] = float(track['high_month_payment'])
+
+        raw_high_payment = (
+            track.get('high_month_payment')
+            or track.get('high_month_payments')
+            or track.get('max_monthly_payment')
+            or track.get('first_month_payment')
+            or track.get('monthly_payment')
+        )
+        if isinstance(raw_high_payment, list):
+            raw_high_payment = max(raw_high_payment) if raw_high_payment else None
+        temp['high_month_payment'] = float(raw_high_payment) if raw_high_payment not in (None, "", False) else None
         
         first_loan_tracks.append(temp)
 

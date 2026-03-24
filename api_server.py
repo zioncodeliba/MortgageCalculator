@@ -1,5 +1,6 @@
 from fastapi import FastAPI, UploadFile, File, Form
 import json
+from decimal import Decimal, ROUND_HALF_UP
 from typing import List, Dict, Any, Optional
 from functions import (
     calculate_schedule, summarize_schedule, optimize_mortgage, 
@@ -31,6 +32,62 @@ class RoundingJSONResponse(JSONResponse):
             indent=None,
             separators=(",", ":"),
         ).encode("utf-8")
+
+
+def round_half_up_to_int(value):
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return int(Decimal(str(value)).quantize(Decimal("1"), rounding=ROUND_HALF_UP))
+    return value
+
+
+def round_numeric_list_to_int(values):
+    if not isinstance(values, list):
+        return values
+    return [round_half_up_to_int(item) for item in values]
+
+
+def normalize_approval_result_numbers(results: Dict[str, Any]) -> Dict[str, Any]:
+    for mix_key in ("proposed_mix", "optimal_mix"):
+        mix = results.get(mix_key)
+        if not isinstance(mix, dict):
+            continue
+
+        summary = mix.get("summary")
+        if isinstance(summary, dict):
+            summary_fields = ["First_Monthly_Payment", "Total_Estimated_Repayment"]
+            if mix_key == "proposed_mix":
+                summary_fields.append("high_month_payments")
+            if mix_key == "optimal_mix":
+                summary_fields.append("Indexation_Component")
+            for field in summary_fields:
+                if field in summary:
+                    summary[field] = round_half_up_to_int(summary[field])
+
+        graph_data = mix.get("graph_data")
+        if isinstance(graph_data, dict):
+            for field in ("interest_payment", "principal_repayment"):
+                if field in graph_data:
+                    graph_data[field] = round_numeric_list_to_int(graph_data[field])
+
+        track_details = mix.get("tracks_detail")
+        if isinstance(track_details, list):
+            for track in track_details:
+                if not isinstance(track, dict):
+                    continue
+                track_fields = ["Monthly_Payment"]
+                if mix_key == "proposed_mix":
+                    track_fields.extend(["high_month_payment", "total_pay"])
+                for field in track_fields:
+                    if field in track:
+                        track[field] = round_half_up_to_int(track[field])
+
+    savings = results.get("savings")
+    if isinstance(savings, dict) and "total_savings" in savings:
+        savings["total_savings"] = round_half_up_to_int(savings["total_savings"])
+
+    return results
 # uvicorn api_server:app --reload
 #app = FastAPI(title="Mortgage API Server")
 app = FastAPI(title="Mortgage API Server", default_response_class=RoundingJSONResponse)
@@ -390,18 +447,21 @@ class MortgageEngine:
             max_months_orig = max(max_months_orig, tr["months"])
             
             p, i, k = summarize_schedule(sch)
+            track_high_month_payment = tr.get("high_month_payment")
+            if track_high_month_payment in (None, "", False):
+                track_high_month_payment = max((row[2] for row in sch), default=0)
             total_pay_orig += (p + i + k)
             total_int_orig += i
             total_idx_orig += k
             first_pmt_orig += sch[0][2]
-            high_month_payments += tr['high_month_payment']
+            high_month_payments += track_high_month_payment
             track_details_orig.append({
                 "Name": tr["rate_type"], # originally "שם": tr["rate_type"]
                 "Interest": tr["rate"], # originally "ריבית": tr["rate"]
                 "Term_Months": tr["months"], # originally "תקופה_חודשים": tr["months"]
                 "Monthly_Payment": sch[0][2], # originally "החזר_חודשי": sch[0][2]
-                "high_month_payment":tr["high_month_payment"],
-                'total_pay': p + i + k,
+                "high_month_payment": track_high_month_payment,
+                'total_pay': p + i + k
             })
         
         months_axis = list(range(1, max_months_orig + 1))
@@ -503,7 +563,7 @@ class MortgageEngine:
         else:
             results["optimal_mix"] = None
             results["savings"] = None
-        return results
+        return normalize_approval_result_numbers(results)
 
     def get_uniform_baskets_analysis(self, principal: float, years: int) -> Dict[str, Any]:
         """
@@ -612,4 +672,3 @@ async def approval(json_file: UploadFile = File(...), property_value: float = Fo
 @app.get("/uniform-baskets") # טאב 7
 async def baskets(principal: float, years: int):
     return engine.get_uniform_baskets_analysis(principal, years)
-
