@@ -400,7 +400,8 @@ class MortgageEngine:
                 "Interest": tr["rate"], # originally "ריבית": tr["rate"]
                 "Term_Months": tr["months"], # originally "תקופה_חודשים": tr["months"]
                 "Monthly_Payment": sch[0][2], # originally "החזר_חודשי": sch[0][2]
-                "high_month_payment":tr["high_month_payment"]
+                "high_month_payment":tr["high_month_payment"],
+                'total_pay': p + i + k,
             })
         
         months_axis = list(range(1, max_months_orig + 1))
