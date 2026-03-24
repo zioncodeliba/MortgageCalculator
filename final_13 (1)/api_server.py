@@ -532,7 +532,7 @@ class MortgageEngine:
             "Uniform_Basket_2": [ # originally "סל אחיד 2"
                 quick_calc(principal/3, "קלצ", None, "33.3% קל״צ"), # originally "קלצ (1/3)"
                 quick_calc(principal/3, "פריים", 1, "33.3% פריים"), # originally "פריים (1/3)"
-                quick_calc(principal/3, "מצ", 60, "33.3% מ״צ") # originally "משתנה (1/3)"
+                quick_calc(principal/3, "מצ", 60, "33.3 מ״צ") # originally "משתנה (1/3)"
             ],
             "Uniform_Basket_3": [ # originally "סל אחיד 3"
                 quick_calc(principal/2, "קלצ", None, "50% קל״צ"), # originally "קלצ (1/2)"
