@@ -88,6 +88,62 @@ def normalize_approval_result_numbers(results: Dict[str, Any]) -> Dict[str, Any]
         savings["total_savings"] = round_half_up_to_int(savings["total_savings"])
 
     return results
+
+
+def normalize_refinance_result_numbers(results: Dict[str, Any]) -> Dict[str, Any]:
+    comparison_table = results.get("comparison_table")
+    if isinstance(comparison_table, list):
+        for row in comparison_table:
+            if not isinstance(row, dict):
+                continue
+            for field in ("First_Monthly_Payment", "Max_Monthly_Payment", "Total_Repayment"):
+                if field in row:
+                    row[field] = round_half_up_to_int(row[field])
+
+    detailed_scenarios = results.get("detailed_scenarios")
+    if isinstance(detailed_scenarios, dict):
+        for scenario in detailed_scenarios.values():
+            if not isinstance(scenario, dict):
+                continue
+
+            summary = scenario.get("summary")
+            if isinstance(summary, dict):
+                for field, value in list(summary.items()):
+                    if isinstance(value, (int, float)) and not isinstance(value, bool):
+                        summary[field] = round_half_up_to_int(value)
+
+            combined_graph = scenario.get("combined_graph")
+            if isinstance(combined_graph, dict) and "payments" in combined_graph:
+                combined_graph["payments"] = round_numeric_list_to_int(combined_graph["payments"])
+
+            tracks = scenario.get("tracks")
+            if not isinstance(tracks, list):
+                continue
+
+            for track in tracks:
+                if not isinstance(track, dict):
+                    continue
+
+                for field in (
+                    "Amount",
+                    "First_Payment",
+                    "Max_Payment",
+                    "Total_Indexation",
+                    "Total_Interest",
+                    "Total_Repayment",
+                ):
+                    if field in track:
+                        track[field] = round_half_up_to_int(track[field])
+
+                graph_arrays = track.get("graph_arrays")
+                if isinstance(graph_arrays, (list, tuple)):
+                    normalized_graph_arrays = list(graph_arrays)
+                    for index in (1, 2, 3, 4, 6):
+                        if index < len(normalized_graph_arrays):
+                            normalized_graph_arrays[index] = round_numeric_list_to_int(normalized_graph_arrays[index])
+                    track["graph_arrays"] = normalized_graph_arrays
+
+    return results
 # uvicorn api_server:app --reload
 #app = FastAPI(title="Mortgage API Server")
 app = FastAPI(title="Mortgage API Server", default_response_class=RoundingJSONResponse)
@@ -339,20 +395,20 @@ class MortgageEngine:
 
             # name_converter = {"update_mortage":"משכנתא מעודכנת","non_indx_mortage":"משכנתא לא צמודה","optimal_mortage":"משכנתא מחזור אופטימלי"}
             name_converter = {"update_mortage":"Updated_Mortgage","non_indx_mortage":"Non-linked_Mortgage","optimal_mortage":"Optimal_Refinance_Mortgage"}
-            return {
+            return normalize_refinance_result_numbers({
                 "comparison_table": comparison_table, # נתונים לטבלה ההשוואתית
                 "detailed_scenarios": detailed_scenarios, # פירוט מלא לכל תרחיש (גרפים + טבלאות)
                 "best_res": {'name': name_converter[best_res_data[4]], "Savings_Graph_By_Years": {"Years": years_x, "Savings": savings_y}}, # originally "גרף חיסכון בשנים": {"שנים": years_x, "חיסכון": savings_y}
                 "ltv_used": ltv_bucket
-            }
+            })
         
         else:
-            return {
+            return normalize_refinance_result_numbers({
                 "comparison_table": comparison_table, # נתונים לטבלה ההשוואתית
                 "detailed_scenarios": detailed_scenarios, # פירוט מלא לכל תרחיש (גרפים + טבלאות)
                 "best_res": {'name': 'there is no saving!!'},
                 "ltv_used": ltv_bucket
-            }
+            })
 
     def _process_scenario_details(self, tracks_list: List) -> Dict[str, Any]:
         """
