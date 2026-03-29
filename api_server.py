@@ -437,7 +437,8 @@ class MortgageEngine:
                 "Total_Indexation": k ,
                 "Total_Repayment": p + i + k, # originally "סך_כל_התשלומים": p + i + k
                 'internal_rate_of_return': info.get('internal_rate_of_return',0),
-                "graph_arrays": _schedule_arrays(sch) # כל המערכים לגרפים של מסלול בודד
+                "graph_arrays": _schedule_arrays(sch), # כל המערכים לגרפים של מסלול בודד
+                'Freq':info.get("תדירות שינוי"),
             })
 
         # חישוב זרם תשלומים מאוחד לתרחיש (לגרף הכחול המצטבר)
@@ -517,7 +518,8 @@ class MortgageEngine:
                 "Term_Months": tr["months"], # originally "תקופה_חודשים": tr["months"]
                 "Monthly_Payment": sch[0][2], # originally "החזר_חודשי": sch[0][2]
                 "high_month_payment": track_high_month_payment,
-                'total_pay': p + i + k
+                'total_pay': p + i + k,
+                'Freq':freq_val,
             })
         
         months_axis = list(range(1, max_months_orig + 1))
@@ -569,7 +571,8 @@ class MortgageEngine:
                 track_details_opt.append({
                 "Name": tr["rate_type"], # originally "שם": tr["rate_type"]
                 "Interest": tr["rate"], # originally "ריבית": tr["rate"]
-               "Term_Months": tr["months"], # originally "תקופה_חודשים": tr["months"]
+                "Term_Months": tr["months"], # originally "תקופה_חודשים": tr["months"]
+                'Freq': tr['freq'],
                 "Monthly_Payment": tr["schedule"][0][2] # originally "החזר_חודשי": tr["schedule"][0][2]
                 })
 
@@ -638,7 +641,7 @@ class MortgageEngine:
             #except: 
             #    init_sum_rate = 4.0
             sch = calculate_schedule(amt, months, init_sum_rate, "שפיצר", t_type, freq, con.prime_margin, 0)
-            return {"name": name, "sch": sch, "rate": init_sum_rate, "principal": amt}
+            return {"name": name, "sch": sch, "rate": init_sum_rate, "principal": amt,'freq':freq}
         
 
         # הגדרת הרכב שלושת הסלים
@@ -674,7 +677,8 @@ class MortgageEngine:
                 track_details.append({
                     "Name": t["name"], # originally "שם": t["name"]
                     "Interest": t["rate"], # originally "ריבית": t["rate"]
-                    "Amount": t["principal"] # originally "סכום": t["principal"]
+                    "Amount": t["principal"], # originally "סכום": t["principal"]
+                    'Freq': t['freq'],
                 })
 
             # 2. בניית נתונים לגרף "התפתחות החזרים לאורך זמן" (תחתית הצילום)
